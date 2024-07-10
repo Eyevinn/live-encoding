@@ -14,7 +14,11 @@ export interface HealthcheckOptions {
   title: string;
 }
 
-const healthcheck: FastifyPluginCallback<HealthcheckOptions> = (fastify, opts, next) => {
+const healthcheck: FastifyPluginCallback<HealthcheckOptions> = (
+  fastify,
+  opts,
+  next
+) => {
   fastify.get<{ Reply: Static<typeof HelloWorld> }>(
     '/',
     {
@@ -49,17 +53,16 @@ export default (opts: ApiOptions) => {
     swagger: {
       info: {
         title: opts.title,
-        description: 'hello',
+        description: 'Live Encoder Management API',
         version: 'v1'
       }
     }
   });
   api.register(swaggerUI, {
-    routePrefix: '/docs'
+    routePrefix: '/api/docs'
   });
 
   api.register(healthcheck, { title: opts.title });
-  // register other API routes here
 
   return api;
-}
+};

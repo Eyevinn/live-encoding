@@ -3,39 +3,99 @@
 </h1>
 
 <div align="center">
-  Open Source Live Encoder based on ffmpeg. 
+  Open Source Live Encoder based on ffmpeg and Shaka packager. 
   <br />
   <br />
-  :book: <b><a href="https://eyevinn.github.io/{{repo-name}}/">Read the documentation (github pages)</a></b> :eyes:
+  :book: <b><a href="https://docs.osaas.io/">Available as a Service</a></b> :eyes:
   <br />
 </div>
 
 <div align="center">
 <br />
 
-[![npm](https://img.shields.io/npm/v/@eyevinn/{{repo-name}}?style=flat-square)](https://www.npmjs.com/package/@eyevinn/{{repo-name}})
-[![github release](https://img.shields.io/github/v/release/Eyevinn/{{repo-name}}?style=flat-square)](https://github.com/Eyevinn/{{repo-name}}/releases)
-[![license](https://img.shields.io/github/license/eyevinn/{{repo-name}}.svg?style=flat-square)](LICENSE)
-
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-ff69b4.svg?style=flat-square)](https://github.com/eyevinn/{{repo-name}}/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
-[![made with hearth by Eyevinn](https://img.shields.io/badge/made%20with%20%E2%99%A5%20by-Eyevinn-59cbe8.svg?style=flat-square)](https://github.com/eyevinn)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-ff69b4.svg?style=flat-square)](https://github.com/Eyevinn/live-encoding/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+[![made with hearth by Eyevinn](https://img.shields.io/badge/made%20with%20%E2%99%A5%20by-Eyevinn-59cbe8.svg?style=flat-square)](https://github.com/Eyevinn)
 [![Slack](http://slack.streamingtech.se/badge.svg)](http://slack.streamingtech.se)
 
 </div>
 
-<!-- Add a description of the project here -->
+Live transcoding to HLS and optionally MPEG-DASH. Provides origin for CDN shield to pull streams as well as push to CDN origin.
 
 ## Requirements
 
-<!--Add any external project dependencies such as node.js version etc here -->
+- ffmpeg and optionally Shaka packager installed
 
 ## Installation / Usage
 
-<!--Add clear instructions on how to use the project here -->
+```
+% npm install
+```
+
+### Environment Variables
+
+| Variable     | Description                                                                    | Default value |
+| ------------ | ------------------------------------------------------------------------------ | ------------- |
+| `PORT`       | API port to bind and listen to                                                 | `8000`        |
+| `ORIGIN_DIR` |  Location on disk where to write media segments and playlists                  | `/tmp/media`  |
+| `HLS_ONLY`   | Only output HLS + TS                                                           | `true`        |
+| `RTMP_PORT`  | RTMP port to bind and listen to                                                | `1935`        |
+| `STREAM_KEY` | RTMP streamkey                                                                 | `stream`      |
+| `OUTPUT_URL` | URL to upload media segments and playlists. If not set push to CDN is disabled |               |
+
+Run encoder with media dir at `/data`
+
+```
+% ORIGIN_DIR=/data npm start
+```
+
+Start encoder:
+
+```
+% curl -X 'POST' \
+  'http://localhost:8000/encoder' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "timeout": 0
+}'
+```
+
+Get status:
+
+```
+% curl -X 'GET' \
+  'http://localhost:8000/encoder' \
+  -H 'accept: application/json'
+```
+
+If status is `starting` you can start pushing to the RTMP address `rtmp://<your-host-ip>:1935/live/stream` (where `stream` is the streamkey).
+
+When status is `running` you can play the HLS from `http://localhost:8000/origin/hls/index.m3u8`
+
+Top stop the encoder:
+
+```
+% curl -X 'DELETE' \
+  'http://localhost:8000/encoder' \
+  -H 'accept: application/json'
+```
+
+### Docker
+
+Run Eyevinn live encoding as a Docker container where `/tmp/media` is a directory on your host.
+
+```
+% docker run --rm -d \
+  -p 8000:8000 -p 1935:1935 \
+  -v /tmp/media:/data \
+  eyevinntechnology/live-encoding
+```
 
 ## Development
 
-<!--Add clear instructions on how to start development of the project here -->
+```
+% DEBUG=1 npm start
+```
 
 ## Contributing
 
