@@ -161,10 +161,10 @@ export class Encoder {
       process: spawn(this.ffmpegExecutable, ffmpegArgs)
     };
     this.ffmpeg.process?.stdout?.on('data', (data) => {
-      Log().debug(data.toString());
+      Log().info(`${data}`);
     });
     this.ffmpeg.process?.stderr?.on('data', (data) => {
-      Log().debug(data.toString());
+      Log().debug(`${data}`);
     });
     this.ffmpeg.process?.on('exit', (code) => {
       Log().info('ffmpeg exited with code ' + code);
