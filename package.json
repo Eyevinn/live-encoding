@@ -17,10 +17,12 @@
   },
   "dependencies": {
     "@fastify/cors": "^8.2.0",
+    "@fastify/static": "^7.0.4",
     "@fastify/swagger": "^8.3.1",
     "@fastify/swagger-ui": "^1.5.0",
     "@fastify/type-provider-typebox": "^3.6.0",
     "@sinclair/typebox": "^0.29.0",
+    "chalk": "4.1.2",
     "fastify": "4.23.2",
     "nodemon": "^2.0.20",
     "ts-node": "^10.9.1"
