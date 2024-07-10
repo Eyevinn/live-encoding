@@ -122,7 +122,7 @@ export class Encoder {
       rtmpPort: this.rtmpPort,
       streamKey: this.streamKey,
       outputUrl: this.opts.outputUrl?.toString(),
-      playlist: '/origin/index.m3u8',
+      playlist: '/origin/hls/index.m3u8',
       status: this.status
     };
   }
