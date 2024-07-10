@@ -161,7 +161,7 @@ export class Encoder {
       process: spawn(this.ffmpegExecutable, ffmpegArgs)
     };
     this.ffmpeg.process?.stderr?.on('data', (data) => {
-      Log().debug(`${data}`);
+      Log().error(`${data}`);
     });
     this.ffmpeg.process?.on('exit', (code) => {
       Log().info('ffmpeg exited with code ' + code);
@@ -272,6 +272,8 @@ export function generateFilterComplex(ladder: BitrateLadderStep[]): string[] {
 export function generateInput(rtmpPort: number, streamKey: string): string[] {
   return [
     '-y',
+    '-loglevel',
+    'error',
     '-listen',
     '1',
     '-i',
