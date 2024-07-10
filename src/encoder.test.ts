@@ -111,14 +111,14 @@ describe('encoder util', () => {
       '-hls_segment_type',
       'mpegts',
       '-hls_segment_filename',
-      '/data/hls/master_%v_%02d.ts',
+      '/data/hls/media_%v_%02d.ts',
       '-hls_list_size',
       '6',
       '-master_pl_name',
       'index.m3u8',
       '-var_stream_map',
       'v:0,a:0 v:1,a:1',
-      '/data/hls/master_%v.m3u8'
+      '/data/hls/media_%v.m3u8'
     ]);
   });
 });
