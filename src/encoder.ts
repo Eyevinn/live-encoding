@@ -97,7 +97,7 @@ export class Encoder {
           clearInterval(monitor);
         } else {
           if (await this.hlsIndexIsAvailable()) {
-            Log().info(
+            Log().debug(
               'We have HLS index file available, change status to running'
             );
             this.status = 'running';
@@ -160,16 +160,13 @@ export class Encoder {
       exitCode: 0,
       process: spawn(this.ffmpegExecutable, ffmpegArgs)
     };
-    this.ffmpeg.process?.stdout?.on('data', (data) => {
-      Log().debug(data.toString());
-    });
     this.ffmpeg.process?.stderr?.on('data', (data) => {
-      Log().debug(data.toString());
+      Log().error(`${data}`);
     });
     this.ffmpeg.process?.on('exit', (code) => {
       Log().info('ffmpeg exited with code ' + code);
       Log().info(this.ffmpeg?.process?.spawnargs);
-      Log().debug(`wantsToStop: ${this.wantsToStop}`);
+      Log().info(`  wantsToStop: ${this.wantsToStop}`);
       if (this.ffmpeg) {
         this.ffmpeg.process = undefined;
         this.ffmpeg.exitCode = code || this.wantsToStop ? 0 : 1;
@@ -275,6 +272,8 @@ export function generateFilterComplex(ladder: BitrateLadderStep[]): string[] {
 export function generateInput(rtmpPort: number, streamKey: string): string[] {
   return [
     '-y',
+    '-loglevel',
+    'error',
     '-listen',
     '1',
     '-i',
