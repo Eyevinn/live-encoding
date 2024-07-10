@@ -160,15 +160,15 @@ export class Encoder {
       exitCode: 0,
       process: spawn(this.ffmpegExecutable, ffmpegArgs)
     };
-    this.ffmpeg.process?.stdout?.on('data', (data) =>
-      Log().debug(data.toString())
-    );
-    this.ffmpeg.process?.stderr?.on('data', (data) =>
-      Log().debug(data.toString())
-    );
+    this.ffmpeg.process?.stdout?.on('data', (data) => {
+      Log().debug(data.toString());
+    });
+    this.ffmpeg.process?.stderr?.on('data', (data) => {
+      Log().debug(data.toString());
+    });
     this.ffmpeg.process?.on('exit', (code) => {
-      Log().debug('ffmpeg exited with code ' + code);
-      Log().debug(this.ffmpeg?.process?.spawnargs);
+      Log().info('ffmpeg exited with code ' + code);
+      Log().info(this.ffmpeg?.process?.spawnargs);
       Log().debug(`wantsToStop: ${this.wantsToStop}`);
       if (this.ffmpeg) {
         this.ffmpeg.process = undefined;
