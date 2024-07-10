@@ -1,6 +1,6 @@
 {
   "name": "@eyevinn/live-encoding",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Open source live encoder based on ffmpeg",
   "scripts": {
     "test": "jest",
