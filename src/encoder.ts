@@ -97,7 +97,7 @@ export class Encoder {
           clearInterval(monitor);
         } else {
           if (await this.hlsIndexIsAvailable()) {
-            Log().info(
+            Log().debug(
               'We have HLS index file available, change status to running'
             );
             this.status = 'running';
