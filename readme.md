@@ -1,9 +1,9 @@
 <h1 align="center">
-  Project Name or Logo
+  Eyevinn Live Encoding
 </h1>
 
 <div align="center">
-  project name - quick salespitch why this is awesome. 
+  Open Source Live Encoder based on ffmpeg. 
   <br />
   <br />
   :book: <b><a href="https://eyevinn.github.io/{{repo-name}}/">Read the documentation (github pages)</a></b> :eyes:

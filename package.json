@@ -1,7 +1,7 @@
 {
-  "name": "@eyevinn/typescript-nodejs",
+  "name": "@eyevinn/live-encoding",
   "version": "1.0.0",
-  "description": "The default typescript-nodejs template for eyevinn projects",
+  "description": "Open source live encoder based on ffmpeg",
   "scripts": {
     "test": "jest",
     "prepare": "husky install",
