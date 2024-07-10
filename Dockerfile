@@ -17,5 +17,4 @@ COPY --chown=node:node ["src", "./src"]
 RUN npm pkg delete scripts.prepare \
     && npm ci --omit=dev
 ENV ORIGIN_DIR=/data
-ENV DEBUG=1
 CMD [ "npm", "run", "start" ]
