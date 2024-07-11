@@ -8,6 +8,8 @@ const server = api({ title: 'Eyevinn Live Encoding' });
 
 const mediaDir = process.env.ORIGIN_DIR || '/tmp/media';
 
+const PORT = process.env.PORT ? Number(process.env.PORT) : 8000;
+
 const encoderOpts = {
   hlsOnly: process.env.HLS_ONLY
     ? process.env.HLS_ONLY.toLowerCase() === 'true' ||
@@ -15,7 +17,8 @@ const encoderOpts = {
     : true,
   outputUrl: process.env.OUTPUT_URL
     ? new URL(process.env.OUTPUT_URL)
-    : undefined
+    : undefined,
+  originPort: PORT
 };
 const encoder = new Encoder(
   process.env.FFMPEG_EXECUTABLE || 'ffmpeg',
@@ -30,7 +33,6 @@ server.register(routeEncoder, { encoder });
 server.register(routeOrigin, {
   mediaPath: mediaDir
 });
-const PORT = process.env.PORT ? Number(process.env.PORT) : 8000;
 server.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {
   if (err) {
     throw err;

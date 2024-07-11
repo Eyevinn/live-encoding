@@ -8,6 +8,8 @@ import { Log } from './utils/log';
 import path from 'path';
 import { access, constants, mkdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
+import { HLSPullPush, MediaPackageOutput } from '@eyevinn/hls-pull-push';
+import { PullPushLogger } from './utils/pull_push_logger';
 
 export type BitrateLadderStep = {
   mediaType: 'video' | 'audio';
@@ -43,6 +45,7 @@ const DEFAULT_LADDER: BitrateLadderStep[] = [
 export type EncoderOpts = {
   hlsOnly: boolean;
   outputUrl?: URL;
+  originPort?: number;
 };
 
 type Process = {
@@ -53,7 +56,10 @@ type Process = {
 export class Encoder {
   private status: EncoderStatus = 'idle';
   private wantsToStop = false;
+  private pullPushStarted = false;
   private ffmpeg?: Process;
+  private pullPush?: HLSPullPush;
+  private fetcherId?: string;
 
   constructor(
     private ffmpegExecutable: string,
@@ -62,7 +68,18 @@ export class Encoder {
     private streamKey: string,
     private mediaDir: string,
     private opts: EncoderOpts
-  ) {}
+  ) {
+    if (this.opts.outputUrl) {
+      if (
+        this.opts.outputUrl.protocol == 'https:' ||
+        this.opts.outputUrl.protocol == 'http:'
+      ) {
+        this.pullPush = new HLSPullPush(new PullPushLogger());
+      } else {
+        throw new Error(`Unsupported protocol ${this.opts.outputUrl.protocol}`);
+      }
+    }
+  }
 
   public async start(
     startRequest: EncoderStartRequest
@@ -97,10 +114,15 @@ export class Encoder {
           clearInterval(monitor);
         } else {
           if (await this.hlsIndexIsAvailable()) {
-            Log().debug(
-              'We have HLS index file available, change status to running'
-            );
-            this.status = 'running';
+            if (this.status != 'running') {
+              Log().debug(
+                'We have HLS index file available, change status to running'
+              );
+              this.status = 'running';
+              if (this.opts.outputUrl && !this.pullPushStarted) {
+                await this.startPullPush();
+              }
+            }
           }
           if (startRequest.timeout) {
             if (
@@ -129,6 +151,7 @@ export class Encoder {
 
   public async stop() {
     this.wantsToStop = true;
+    await this.stopPullPush();
     await this.stopFFmpeg();
   }
 
@@ -188,6 +211,62 @@ export class Encoder {
       this.ffmpeg.process.kill('SIGKILL');
       await waitForKilled;
       await this.cleanup();
+    }
+  }
+
+  private async startPullPush() {
+    if (
+      !this.pullPushStarted &&
+      this.opts.outputUrl &&
+      this.pullPush &&
+      !this.wantsToStop
+    ) {
+      const username = this.opts.outputUrl.username;
+      const password = this.opts.outputUrl.password;
+      const destUrl = new URL(
+        this.opts.outputUrl.pathname + this.opts.outputUrl.searchParams,
+        this.opts.outputUrl.origin
+      );
+      Log().debug(`${username} ${password} ${destUrl.toString()}`);
+      const plugin = new MediaPackageOutput();
+      this.pullPush.registerPlugin('mediapackage', plugin);
+      const outputDest = plugin.createOutputDestination(
+        {
+          ingestUrls: [
+            {
+              url: destUrl.toString(),
+              username,
+              password
+            }
+          ]
+        },
+        this.pullPush.getLogger()
+      );
+      if (outputDest) {
+        const source = new URL(
+          `http://localhost:${this.opts.originPort}/origin/hls/index.m3u8`
+        );
+        this.fetcherId = this.pullPush.startFetcher({
+          name: 'default',
+          url: source.toString(),
+          destPlugin: outputDest,
+          destPluginName: 'mediapackage'
+        });
+        outputDest.attachSessionId(this.fetcherId);
+        this.pullPushStarted = true;
+        Log().info(
+          `Started pull push of ${source.href} to ${destUrl.toString()}`
+        );
+      }
+    }
+  }
+
+  private async stopPullPush() {
+    if (this.pullPush && this.fetcherId) {
+      await this.pullPush.stopFetcher(this.fetcherId);
+      this.fetcherId = undefined;
+      this.pullPushStarted = false;
+      Log().info('Stopped pull push');
     }
   }
 

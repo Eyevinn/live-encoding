@@ -17,6 +17,7 @@
     "node": ">=18.15.0"
   },
   "dependencies": {
+    "@eyevinn/hls-pull-push": "^0.6.0",
     "@fastify/cors": "^8.2.0",
     "@fastify/static": "^7.0.4",
     "@fastify/swagger": "^8.3.1",
