@@ -244,7 +244,7 @@ export class Encoder {
       );
       if (outputDest) {
         const source = new URL(
-          `http://localhost:${this.opts.originPort}/origin/hls/index.m3u8`
+          `http://127.0.0.1:${this.opts.originPort}/origin/hls/index.m3u8`
         );
         this.fetcherId = this.pullPush.startFetcher({
           name: 'default',
