@@ -42,7 +42,6 @@ Live transcoding to HLS and optionally MPEG-DASH. Provides origin for CDN shield
 | `STREAM_KEY` | RTMP streamkey                                                                 | `stream`      |
 | `OUTPUT_URL` | URL to upload media segments and playlists. If not set push to CDN is disabled |               |
 
-
 ### CDN Pull
 
 Run encoder with media dir at `/data`
