@@ -42,6 +42,8 @@ Live transcoding to HLS and optionally MPEG-DASH. Provides origin for CDN shield
 | `STREAM_KEY` | RTMP streamkey                                                                 | `stream`      |
 | `OUTPUT_URL` | URL to upload media segments and playlists. If not set push to CDN is disabled |               |
 
+### CDN Pull
+
 Run encoder with media dir at `/data`
 
 ```
@@ -78,6 +80,16 @@ Top stop the encoder:
 % curl -X 'DELETE' \
   'http://localhost:8000/encoder' \
   -H 'accept: application/json'
+```
+
+### CDN Push (AWS Media Package)
+
+Run encoder with media dir at `/data`
+
+```
+% ORIGIN_DIR=/data \
+  OUTPUT_URL=https://<username>>:<password>@xxxxx.mediapackage.xxxx.amazonaws.com/in/v2/e82a0fc53d4b44ec89ac1a1fccd3a333/e82a0fc53d4b44ec89ac1a1fccd3a333/channel \
+  npm start
 ```
 
 ### Docker
