@@ -11,10 +11,10 @@ RUN mkdir /data && chown node:node /data
 USER node
 WORKDIR /app
 VOLUME [ "/data" ]
-COPY --chown=node:node ["package.json", "package-lock.json*", "tsconfig*.json", "./"]
-COPY --chown=node:node ["src", "./src"]
+COPY --chown=node:node . .
 # Delete prepare script to avoid errors from husky
 RUN npm pkg delete scripts.prepare \
     && npm ci --omit=dev
+RUN npm run build:app
 ENV ORIGIN_DIR=/data
 CMD [ "npm", "run", "start" ]
