@@ -21,6 +21,11 @@
 
 Live transcoding to HLS and optionally MPEG-DASH. Provides origin for CDN shield to pull streams as well as push to CDN origin.
 
+![Screenshot 1](screenshot1.png)
+![Screenshot 2](screenshot2.png)
+
+[![Badge OSC](https://img.shields.io/badge/Evaluate-24243B?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTIiIGZpbGw9InVybCgjcGFpbnQwX2xpbmVhcl8yODIxXzMxNjcyKSIvPgo8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI3IiBzdHJva2U9ImJsYWNrIiBzdHJva2Utd2lkdGg9IjIiLz4KPGRlZnM%2BCjxsaW5lYXJHcmFkaWVudCBpZD0icGFpbnQwX2xpbmVhcl8yODIxXzMxNjcyIiB4MT0iMTIiIHkxPSIwIiB4Mj0iMTIiIHkyPSIyNCIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPgo8c3RvcCBzdG9wLWNvbG9yPSIjQzE4M0ZGIi8%2BCjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzREQzlGRiIvPgo8L2xpbmVhckdyYWRpZW50Pgo8L2RlZnM%2BCjwvc3ZnPgo%3D)](https://app.osaas.io/browse/eyevinn-live-encoding)
+
 ## Requirements
 
 - ffmpeg and optionally Shaka packager installed
@@ -50,11 +55,17 @@ Run encoder with media dir at `/data`
 % ORIGIN_DIR=/data npm start
 ```
 
+### User Interface
+
+Web user interface available at `http://localhost:8000/`
+
+### API
+
 Start encoder:
 
 ```
 % curl -X 'POST' \
-  'http://localhost:8000/encoder' \
+  'http://localhost:8000/api/encoder' \
   -H 'accept: application/json' \
   -H 'Content-Type: application/json' \
   -d '{
@@ -66,7 +77,7 @@ Get status:
 
 ```
 % curl -X 'GET' \
-  'http://localhost:8000/encoder' \
+  'http://localhost:8000/api/encoder' \
   -H 'accept: application/json'
 ```
 
@@ -78,7 +89,7 @@ Top stop the encoder:
 
 ```
 % curl -X 'DELETE' \
-  'http://localhost:8000/encoder' \
+  'http://localhost:8000/api/encoder' \
   -H 'accept: application/json'
 ```
 
