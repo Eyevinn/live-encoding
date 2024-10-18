@@ -62,7 +62,7 @@ export default (opts: ApiOptions) => {
     routePrefix: '/api/docs'
   });
 
-  api.register(healthcheck, { title: opts.title });
+  api.register(healthcheck, { title: opts.title, prefix: '/api' });
 
   return api;
 };

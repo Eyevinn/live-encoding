@@ -1,8 +1,10 @@
+import fastifyStatic from '@fastify/static';
 import api from './api';
 import { Encoder } from './encoder';
 import routeEncoder from './routes/encoder';
 import routeOrigin from './routes/origin';
 import { Log } from './utils/log';
+import path from 'path';
 
 const server = api({ title: 'Eyevinn Live Encoding' });
 
@@ -29,9 +31,13 @@ const encoder = new Encoder(
   encoderOpts
 );
 
-server.register(routeEncoder, { encoder });
+server.register(routeEncoder, { prefix: '/api', encoder });
 server.register(routeOrigin, {
   mediaPath: mediaDir
+});
+server.register(fastifyStatic, {
+  root: path.join(__dirname, '../out'),
+  prefix: '/'
 });
 server.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {
   if (err) {

@@ -12,6 +12,20 @@
     /* Modules */
     "module": "commonjs" /* Specify what module code is generated. */,
     "resolveJsonModule": true /* Enable importing .json files. */,
-    "moduleResolution": "node" /* Specify how TypeScript looks up a file from a given module specifier. */
-  }
+    "moduleResolution": "node" /* Specify how TypeScript looks up a file from a given module specifier. */,
+    "jsx": "preserve",
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "noEmit": true,
+    "incremental": true,
+    "isolatedModules": true
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
 }
