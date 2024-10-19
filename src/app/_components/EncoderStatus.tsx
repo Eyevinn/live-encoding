@@ -15,10 +15,8 @@ export default function EncoderStatus({
   const apiUrl = useApiUrl();
 
   return (
-    <div>
-      <span className="text-default text-xs ml-2">
-        {apiUrl}: {status?.status} {originPlaybackUrl}
-      </span>
-    </div>
+    <span className="text-xs ml-2">
+      {apiUrl}: {status?.status} {originPlaybackUrl}
+    </span>
   );
 }

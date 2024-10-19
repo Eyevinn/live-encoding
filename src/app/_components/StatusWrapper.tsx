@@ -20,7 +20,7 @@ export default function StatusWrapper() {
         )}
         <EncoderControl status={status} />
       </div>
-      <div className="w-full h-32px bg-content1 flex items-center z-20 fixed bottom-0">
+      <div className="w-full h-32px bg-content1 items-center z-20 fixed bottom-0">
         <EncoderStatus
           status={status}
           originPlaybackUrl={
