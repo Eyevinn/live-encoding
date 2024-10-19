@@ -116,9 +116,29 @@ Run Eyevinn live encoding as a Docker container where `/tmp/media` is a director
 
 ## Development
 
+Start the API in development mode that restart server if file changes.
+
 ```
-% DEBUG=1 npm start
+% DEBUG=1 npm run dev
 ```
+
+API is then available at http://localhost:8000/api
+
+Start the web application in development mode
+
+```
+% npm run dev:app
+```
+
+Then the web application is available at http://localhost:3000/ and will connect to the API on port 8000.
+
+To then build the app run:
+
+```
+% npm run build:app
+```
+
+The output is placed in the folder `out/` that is then served by the server.
 
 ## Contributing
 
