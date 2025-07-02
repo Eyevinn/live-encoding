@@ -1,0 +1,131 @@
+swagger: "2.0"
+info:
+  title: Eyevinn Live Encoding
+  description: Live Encoder Management API
+  version: v1
+definitions: {}
+paths:
+  /api:
+    get:
+      description: Say hello
+      responses:
+        "200":
+          description: The magical words!
+          schema:
+            description: The magical words!
+            type: string
+  /api/encoder:
+    get:
+      description: Get encoder status
+      responses:
+        "200":
+          description: Default Response
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                enum:
+                  - idle
+                  - starting
+                  - running
+                  - stopped
+                  - error
+              playlist:
+                description: Origin playlist location
+                type: string
+            required:
+              - status
+        "500":
+          description: Default Response
+          schema:
+            type: object
+            properties:
+              reason:
+                description: Reason why something failed
+                type: string
+            required:
+              - reason
+    post:
+      description: Start encoder
+      parameters:
+        - name: body
+          in: body
+          schema:
+            type: object
+            properties:
+              timeout:
+                description: Timeout in seconds
+                type: number
+      responses:
+        "200":
+          description: Default Response
+          schema:
+            type: object
+            properties:
+              rtmpPort:
+                description: RTMP port
+                type: number
+              streamKey:
+                description: Stream key
+                type: string
+              outputUrl:
+                description: Output URL
+                type: string
+              playlist:
+                description: Origin playlist location
+                type: string
+              status:
+                type: string
+                enum:
+                  - idle
+                  - starting
+                  - running
+                  - stopped
+                  - error
+            required:
+              - rtmpPort
+              - streamKey
+              - playlist
+              - status
+        "500":
+          description: Default Response
+          schema:
+            type: object
+            properties:
+              reason:
+                description: Reason why something failed
+                type: string
+            required:
+              - reason
+    delete:
+      description: Stop encoder
+      responses:
+        "200":
+          description: Default Response
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                enum:
+                  - idle
+                  - starting
+                  - running
+                  - stopped
+                  - error
+              playlist:
+                description: Origin playlist location
+                type: string
+            required:
+              - status
+        "500":
+          description: Default Response
+          schema:
+            type: object
+            properties:
+              reason:
+                description: Reason why something failed
+                type: string
+            required:
+              - reason
