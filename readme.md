@@ -40,14 +40,31 @@ Live transcoding to HLS and optionally MPEG-DASH. Provides origin for CDN shield
 
 ### Environment Variables
 
-| Variable     | Description                                                                    | Default value |
-| ------------ | ------------------------------------------------------------------------------ | ------------- |
-| `PORT`       | API port to bind and listen to                                                 | `8000`        |
-| `ORIGIN_DIR` |  Location on disk where to write media segments and playlists                  | `/tmp/media`  |
-| `HLS_ONLY`   | Only output HLS + TS                                                           | `true`        |
-| `RTMP_PORT`  | RTMP port to bind and listen to                                                | `1935`        |
-| `STREAM_KEY` | RTMP streamkey                                                                 | `stream`      |
-| `OUTPUT_URL` | URL to upload media segments and playlists. If not set push to CDN is disabled |               |
+| Variable            | Description                                                                                             | Default value                |
+| ------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `PORT`              | API port to bind and listen to                                                                          | `8000`                       |
+| `ORIGIN_DIR`        |  Location on disk where to write media segments and playlists                                           | `/tmp/media`                 |
+| `HLS_ONLY`          | Only output HLS + TS                                                                                    | `true`                       |
+| `RTMP_PORT`         | RTMP port to bind and listen to                                                                         | `1935`                       |
+| `STREAM_KEY`        | RTMP streamkey                                                                                          | `stream`                     |
+| `OUTPUT_URL`        | URL to upload media segments and playlists. If not set push to CDN is disabled                          |                              |
+| `SUBTITLE_URL`      | Sidecar WebVTT source URL fetched alongside the A/V input. If not set the output stays video+audio only |                              |
+| `SUBTITLE_LANGUAGE` | BCP-47 language tag for the subtitle rendition, e.g. `en`                                               | `und`                        |
+| `SUBTITLE_NAME`     | Display name for the subtitle rendition, e.g. `English`                                                 | value of `SUBTITLE_LANGUAGE` |
+| `SUBTITLE_DEFAULT`  | Whether the subtitle rendition is the default (`true`/`1`)                                              | `false`                      |
+
+### Subtitles
+
+When `SUBTITLE_URL` is set to an `http(s)` WebVTT source, the encoder fetches it alongside the A/V input and publishes it as a segmented WebVTT rendition referenced from the HLS master playlist as an `#EXT-X-MEDIA:TYPE=SUBTITLES` group, available across the whole ABR ladder.
+
+```
+% ORIGIN_DIR=/data \
+  SUBTITLE_URL=https://example.com/subtitles/en.vtt \
+  SUBTITLE_LANGUAGE=en \
+  SUBTITLE_NAME=English \
+  SUBTITLE_DEFAULT=true \
+  npm start
+```
 
 ### CDN Pull
 
