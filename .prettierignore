@@ -1,2 +1,4 @@
 .next
 out/
+# generated swagger dump (see docs/api.yaml header), not hand-formatted
+docs/api.yaml
