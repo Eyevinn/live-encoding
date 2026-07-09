@@ -1,7 +1,10 @@
 import {
   BitrateLadderStep,
+  SubtitleTrack,
   generateFilterComplex,
-  generateOutput
+  generateInput,
+  generateOutput,
+  rewriteMasterPlaylist
 } from './encoder';
 
 const testLadder: BitrateLadderStep[] = [
@@ -120,5 +123,93 @@ describe('encoder util', () => {
       'v:0,a:0 v:1,a:1',
       '/data/hls/media_%v.m3u8'
     ]);
+  });
+});
+
+const subtitleTracks: SubtitleTrack[] = [
+  {
+    url: 'https://example.com/subs/en.vtt',
+    language: 'en',
+    name: 'English',
+    default: true
+  }
+];
+
+describe('subtitle passthrough', () => {
+  test('generateInput is unchanged without subtitles', () => {
+    expect(generateInput(1935, 'stream')).toEqual([
+      '-y',
+      '-loglevel',
+      'error',
+      '-listen',
+      '1',
+      '-i',
+      'rtmp://0.0.0.0:1935/live/stream'
+    ]);
+  });
+
+  test('generateInput appends a sidecar input per subtitle track', () => {
+    expect(generateInput(1935, 'stream', subtitleTracks)).toEqual([
+      '-y',
+      '-loglevel',
+      'error',
+      '-listen',
+      '1',
+      '-i',
+      'rtmp://0.0.0.0:1935/live/stream',
+      '-i',
+      'https://example.com/subs/en.vtt'
+    ]);
+  });
+
+  test('generateOutput maps the subtitle and groups it on the last variant', () => {
+    const args = generateOutput(true, testLadder, '/data', subtitleTracks);
+    expect(args.slice(0, 4)).toEqual(['-map', '1:0', '-c:s', 'webvtt']);
+    const varStreamMapIndex = args.indexOf('-var_stream_map');
+    expect(args[varStreamMapIndex + 1]).toEqual(
+      'v:0,a:0 v:1,a:1,s:0,sgroup:subs'
+    );
+  });
+
+  test('generateOutput is unchanged when no subtitles are configured', () => {
+    expect(generateOutput(true, testLadder, '/data', [])).toEqual(
+      generateOutput(true, testLadder, '/data')
+    );
+  });
+
+  test('rewriteMasterPlaylist broadens the subtitle group to every variant', () => {
+    const master = [
+      '#EXTM3U',
+      '#EXT-X-VERSION:6',
+      '#EXT-X-STREAM-INF:BANDWIDTH=4540800,RESOLUTION=1280x720,CODECS="avc1.f4001f,mp4a.40.2"',
+      'media_0.m3u8',
+      '',
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="subtitle_1",DEFAULT=YES,URI="media_1_vtt.m3u8"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=3440800,RESOLUTION=640x360,CODECS="avc1.f4001e,mp4a.40.2",SUBTITLES="subs"',
+      'media_1.m3u8',
+      ''
+    ].join('\n');
+
+    const rewritten = rewriteMasterPlaylist(master, subtitleTracks, 'subs');
+    const lines = rewritten.split('\n');
+
+    const streamInf = lines.filter((line) =>
+      line.startsWith('#EXT-X-STREAM-INF:')
+    );
+    expect(streamInf.length).toEqual(2);
+    streamInf.forEach((line) => {
+      expect(line).toContain('SUBTITLES="subs"');
+    });
+
+    const media = lines.find((line) => line.startsWith('#EXT-X-MEDIA:'));
+    expect(media).toEqual(
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",' +
+        'LANGUAGE="en",AUTOSELECT=YES,DEFAULT=YES,URI="media_1_vtt.m3u8"'
+    );
+  });
+
+  test('rewriteMasterPlaylist leaves the playlist untouched without subtitles', () => {
+    const master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nmedia_0.m3u8\n';
+    expect(rewriteMasterPlaylist(master, [], 'subs')).toEqual(master);
   });
 });
