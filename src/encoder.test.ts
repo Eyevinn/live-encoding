@@ -1,6 +1,8 @@
 import {
   BitrateLadderStep,
+  Encoder,
   generateFilterComplex,
+  generateInput,
   generateOutput
 } from './encoder';
 
@@ -99,6 +101,36 @@ describe('encoder util', () => {
     ]);
   });
 
+  test('generates RTMP listener input args by default', () => {
+    const input = generateInput(1935, 'stream');
+    expect(input).toEqual([
+      '-y',
+      '-loglevel',
+      'error',
+      '-listen',
+      '1',
+      '-i',
+      'rtmp://0.0.0.0:1935/live/stream'
+    ]);
+  });
+
+  test('generates caller-mode input args when an input URL is set', () => {
+    const input = generateInput(
+      1935,
+      'stream',
+      'srt://example.com:9000?latency=200&streamid=abc'
+    );
+    expect(input).toEqual([
+      '-y',
+      '-loglevel',
+      'error',
+      '-i',
+      'srt://example.com:9000?latency=200&streamid=abc'
+    ]);
+    // No RTMP listener args when dialing a caller-mode source.
+    expect(input).not.toContain('-listen');
+  });
+
   test('can generate outout args', () => {
     const hlsOnly = generateOutput(true, testLadder, '/data');
     expect(hlsOnly).toEqual([
@@ -120,5 +152,31 @@ describe('encoder util', () => {
       'v:0,a:0 v:1,a:1',
       '/data/hls/media_%v.m3u8'
     ]);
+  });
+});
+
+describe('encoder input URL validation', () => {
+  const build = (inputUrl?: string) =>
+    new Encoder('ffmpeg', 'packager', 1935, 'stream', '/data', {
+      hlsOnly: true,
+      inputUrl
+    });
+
+  test('accepts an srt:// input URL', () => {
+    expect(() => build('srt://example.com:9000?latency=200')).not.toThrow();
+  });
+
+  test('accepts no input URL (default RTMP listener)', () => {
+    expect(() => build(undefined)).not.toThrow();
+  });
+
+  test('rejects a non-srt protocol', () => {
+    expect(() => build('rtsp://example.com:554/stream')).toThrow(
+      /only srt:\/\/ is supported/
+    );
+  });
+
+  test('rejects a value that is not a URL', () => {
+    expect(() => build('not-a-url')).toThrow(/not a valid URL/);
   });
 });
