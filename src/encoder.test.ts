@@ -361,6 +361,25 @@ describe('encoder SRT caller dial lifecycle', () => {
     await jest.advanceTimersByTimeAsync(8000);
     expect(await encoder.getStatus()).toBe('stopped');
   });
+
+  test('redacts secrets in ffmpeg stderr output', async () => {
+    const errorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const encoder = buildEncoder('/media', { inputUrl: 'srt://source:9000' });
+    await encoder.start({});
+
+    const proc = spawnedProcs[0] as EventEmitter & { stderr: EventEmitter };
+    proc.stderr.emit(
+      'data',
+      'Connection to srt://source:9000?passphrase=SUPERSECRETPASS123 failed: I/O error'
+    );
+
+    const logged = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logged).not.toContain('SUPERSECRETPASS123');
+    expect(logged).toContain('<redacted>');
+    errorSpy.mockRestore();
+  });
 });
 
 describe('encoder clears stale HLS output before starting', () => {

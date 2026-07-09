@@ -276,7 +276,12 @@ export class Encoder {
       process: spawn(this.ffmpegExecutable, ffmpegArgs)
     };
     this.ffmpeg.process?.stderr?.on('data', (data) => {
-      Log().error(`${data}`);
+      // Redact URL query strings: a failed srt dial echoes the full input URL
+      // (passphrase, streamid) in ffmpeg's error output, and in caller mode
+      // failed dials are the common path. Note stderr data events are chunked,
+      // so a URL split across chunks could theoretically evade redaction; this
+      // covers the normal single-line case.
+      Log().error(redactSecrets(`${data}`));
     });
     this.ffmpeg.process?.on('exit', (code) => {
       Log().info('ffmpeg exited with code ' + code);
