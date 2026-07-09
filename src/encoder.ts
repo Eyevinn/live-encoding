@@ -46,6 +46,9 @@ export type EncoderOpts = {
   hlsOnly: boolean;
   outputUrl?: URL;
   originPort?: number;
+  // Optional input URL. When set, ffmpeg dials this source in caller mode
+  // instead of listening for an RTMP publisher. Only srt:// is supported.
+  inputUrl?: string;
 };
 
 type Process = {
@@ -79,13 +82,32 @@ export class Encoder {
         throw new Error(`Unsupported protocol ${this.opts.outputUrl.protocol}`);
       }
     }
+    if (this.opts.inputUrl) {
+      let parsed: URL;
+      try {
+        parsed = new URL(this.opts.inputUrl);
+      } catch {
+        throw new Error(
+          `Invalid input URL '${this.opts.inputUrl}': not a valid URL`
+        );
+      }
+      if (parsed.protocol !== 'srt:') {
+        throw new Error(
+          `Unsupported input URL protocol '${parsed.protocol}', only srt:// is supported`
+        );
+      }
+    }
   }
 
   public async start(
     startRequest: EncoderStartRequest
   ): Promise<EncoderStartResponse> {
     const filterComplexArgs = generateFilterComplex(DEFAULT_LADDER);
-    const inputArgs = generateInput(this.rtmpPort, this.streamKey);
+    const inputArgs = generateInput(
+      this.rtmpPort,
+      this.streamKey,
+      this.opts.inputUrl
+    );
     const outputArgs = generateOutput(
       this.opts.hlsOnly,
       DEFAULT_LADDER,
@@ -98,20 +120,42 @@ export class Encoder {
     const monitor = setInterval(async () => {
       if (this.ffmpeg) {
         if (!this.ffmpeg.process) {
-          if (!this.wantsToStop) {
-            Log().info(
-              'ffmpeg process unintentionally exited with code ' +
-                this.ffmpeg.exitCode
-            );
-            this.status = 'error';
-          } else {
+          if (this.wantsToStop) {
             Log().info(
               'ffmpeg process intentionally exited with code ' +
                 this.ffmpeg.exitCode
             );
             this.status = 'stopped';
+            clearInterval(monitor);
+          } else if (this.opts.inputUrl && this.status === 'starting') {
+            // Caller-mode input (e.g. SRT): the source may not be listening
+            // yet. A dial failure before we ever reached 'running' is not
+            // terminal, so retry the connection and stay in 'starting'. The
+            // optional start-request timeout below bounds the retry loop.
+            if (
+              startRequest.timeout &&
+              Date.now() - startAttemptTs > startRequest.timeout * 1000
+            ) {
+              Log().info('Timeout reached while connecting to input source');
+              await this.stop();
+              this.status = 'stopped';
+              clearInterval(monitor);
+            } else {
+              Log().info(
+                'ffmpeg exited before input was ready with code ' +
+                  this.ffmpeg.exitCode +
+                  ', retrying input connection'
+              );
+              await this.startFFmpeg(ffmpegArgs);
+            }
+          } else {
+            Log().info(
+              'ffmpeg process unintentionally exited with code ' +
+                this.ffmpeg.exitCode
+            );
+            this.status = 'error';
+            clearInterval(monitor);
           }
-          clearInterval(monitor);
         } else {
           if (await this.hlsIndexIsAvailable()) {
             if (this.status != 'running') {
@@ -348,7 +392,18 @@ export function generateFilterComplex(ladder: BitrateLadderStep[]): string[] {
     .concat(audioMaps.flat());
 }
 
-export function generateInput(rtmpPort: number, streamKey: string): string[] {
+export function generateInput(
+  rtmpPort: number,
+  streamKey: string,
+  inputUrl?: string
+): string[] {
+  if (inputUrl) {
+    // Caller-mode input: ffmpeg dials the given source (e.g. an srt:// URL in
+    // caller mode) and pulls the feed. Any protocol knobs (latency, passphrase,
+    // streamid, connect timeout, ...) travel as query parameters on the URL and
+    // are parsed by ffmpeg itself, so no option strings are hardcoded here.
+    return ['-y', '-loglevel', 'error', '-i', inputUrl];
+  }
   return [
     '-y',
     '-loglevel',

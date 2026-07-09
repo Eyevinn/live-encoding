@@ -20,7 +20,8 @@ const encoderOpts = {
   outputUrl: process.env.OUTPUT_URL
     ? new URL(process.env.OUTPUT_URL)
     : undefined,
-  originPort: PORT
+  originPort: PORT,
+  inputUrl: process.env.INPUT_URL || undefined
 };
 const encoder = new Encoder(
   process.env.FFMPEG_EXECUTABLE || 'ffmpeg',
