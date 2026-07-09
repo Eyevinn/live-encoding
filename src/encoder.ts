@@ -6,7 +6,7 @@ import {
 } from './model';
 import { Log } from './utils/log';
 import path from 'path';
-import { access, constants, mkdir, rm } from 'fs/promises';
+import { access, constants, mkdir, readFile, rm, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { HLSPullPush, MediaPackageOutput } from '@eyevinn/hls-pull-push';
 import { PullPushLogger } from './utils/pull_push_logger';
@@ -42,11 +42,26 @@ const DEFAULT_LADDER: BitrateLadderStep[] = [
   }
 ];
 
+export type SubtitleTrack = {
+  // Sidecar WebVTT source URL, fetched alongside the A/V input.
+  url: string;
+  // BCP-47 language tag, e.g. 'en' or 'sv'.
+  language: string;
+  // Human readable rendition name, e.g. 'English'.
+  name: string;
+  // Whether this rendition is the default subtitle for the group.
+  default: boolean;
+};
+
 export type EncoderOpts = {
   hlsOnly: boolean;
   outputUrl?: URL;
   originPort?: number;
+  subtitles?: SubtitleTrack[];
 };
+
+// HLS subtitle rendition group id used in the master playlist.
+const SUBTITLE_GROUP_ID = 'subs';
 
 type Process = {
   exitCode: number;
@@ -57,6 +72,7 @@ export class Encoder {
   private status: EncoderStatus = 'idle';
   private wantsToStop = false;
   private pullPushStarted = false;
+  private subtitleMasterFinalized = false;
   private ffmpeg?: Process;
   private pullPush?: HLSPullPush;
   private fetcherId?: string;
@@ -84,16 +100,19 @@ export class Encoder {
   public async start(
     startRequest: EncoderStartRequest
   ): Promise<EncoderStartResponse> {
+    const subtitles = this.opts.subtitles ?? [];
     const filterComplexArgs = generateFilterComplex(DEFAULT_LADDER);
-    const inputArgs = generateInput(this.rtmpPort, this.streamKey);
+    const inputArgs = generateInput(this.rtmpPort, this.streamKey, subtitles);
     const outputArgs = generateOutput(
       this.opts.hlsOnly,
       DEFAULT_LADDER,
-      this.mediaDir
+      this.mediaDir,
+      subtitles
     );
     const ffmpegArgs = inputArgs.concat(filterComplexArgs).concat(outputArgs);
 
     this.status = 'starting';
+    this.subtitleMasterFinalized = false;
     const startAttemptTs = Date.now();
     const monitor = setInterval(async () => {
       if (this.ffmpeg) {
@@ -114,6 +133,7 @@ export class Encoder {
           clearInterval(monitor);
         } else {
           if (await this.hlsIndexIsAvailable()) {
+            await this.finalizeSubtitleMaster();
             if (this.status != 'running') {
               Log().debug(
                 'We have HLS index file available, change status to running'
@@ -161,6 +181,38 @@ export class Encoder {
 
   public getOriginPlaylist(): string | undefined {
     return this.status === 'running' ? '/origin/hls/index.m3u8' : undefined;
+  }
+
+  // ffmpeg attaches the subtitle group to a single variant only (see
+  // generateOutput). Once ffmpeg has written the master playlist, broaden the
+  // SUBTITLES reference to every variant and apply the configured labels so the
+  // rendition is selectable across the whole ABR ladder. The master playlist is
+  // written once by ffmpeg, so this runs a single time per encode.
+  private async finalizeSubtitleMaster(): Promise<void> {
+    const subtitles = this.opts.subtitles ?? [];
+    if (subtitles.length === 0 || this.subtitleMasterFinalized) {
+      return;
+    }
+    const master = path.join(this.mediaDir, '/hls/index.m3u8');
+    try {
+      const content = await readFile(master, 'utf-8');
+      if (!content.includes('#EXT-X-MEDIA:TYPE=SUBTITLES')) {
+        // ffmpeg has not written the subtitle rendition into the master yet.
+        return;
+      }
+      const rewritten = rewriteMasterPlaylist(
+        content,
+        subtitles,
+        SUBTITLE_GROUP_ID
+      );
+      if (rewritten !== content) {
+        await writeFile(master, rewritten);
+      }
+      this.subtitleMasterFinalized = true;
+      Log().info('Wired subtitle group into HLS master playlist');
+    } catch (err) {
+      Log().debug(err);
+    }
   }
 
   private async hlsIndexIsAvailable(): Promise<boolean> {
@@ -348,8 +400,12 @@ export function generateFilterComplex(ladder: BitrateLadderStep[]): string[] {
     .concat(audioMaps.flat());
 }
 
-export function generateInput(rtmpPort: number, streamKey: string): string[] {
-  return [
+export function generateInput(
+  rtmpPort: number,
+  streamKey: string,
+  subtitles: SubtitleTrack[] = []
+): string[] {
+  const args = [
     '-y',
     '-loglevel',
     'error',
@@ -358,22 +414,47 @@ export function generateInput(rtmpPort: number, streamKey: string): string[] {
     '-i',
     `rtmp://0.0.0.0:${rtmpPort}/live/${streamKey}`
   ];
+  // Each sidecar WebVTT source is an extra input after the primary A/V input.
+  for (const subtitle of subtitles) {
+    args.push('-i', subtitle.url);
+  }
+  return args;
 }
 export function generateOutput(
   hlsOnly: boolean,
   ladder: BitrateLadderStep[],
-  mediaDir: string
+  mediaDir: string,
+  subtitles: SubtitleTrack[] = []
 ): string[] {
   if (hlsOnly) {
     let varStreamMap = '';
     const videos = ladder.filter((step) => step.mediaType === 'video');
     for (let i = 0; i < videos.length; i++) {
       varStreamMap += `v:${i},a:${i}`;
+      // Attach the subtitle streams to the last video variant only. ffmpeg's
+      // hls muxer crashes if a subtitle group is referenced from more than one
+      // variant, so the reference is broadened to every variant afterwards in
+      // rewriteMasterPlaylist.
+      if (subtitles.length > 0 && i === videos.length - 1) {
+        for (let s = 0; s < subtitles.length; s++) {
+          varStreamMap += `,s:${s}`;
+        }
+        varStreamMap += `,sgroup:${SUBTITLE_GROUP_ID}`;
+      }
       if (i < videos.length - 1) {
         varStreamMap += ' ';
       }
     }
-    return [
+    const subtitleArgs: string[] = [];
+    for (let s = 0; s < subtitles.length; s++) {
+      // Subtitle sidecar inputs follow the primary input, so subtitle s is
+      // ffmpeg input index s + 1.
+      subtitleArgs.push('-map', `${s + 1}:0`);
+    }
+    if (subtitles.length > 0) {
+      subtitleArgs.push('-c:s', 'webvtt');
+    }
+    return subtitleArgs.concat([
       '-f',
       'hls',
       '-hls_time',
@@ -391,7 +472,50 @@ export function generateOutput(
       '-var_stream_map',
       varStreamMap,
       `${mediaDir}/hls/media_%v.m3u8`
-    ];
+    ]);
   }
   return [];
+}
+
+// ffmpeg (6.1.x hls muxer) only advertises the subtitle group on the single
+// variant that physically carries the subtitle stream, and segfaults if any
+// other variant references the group directly. This rewrites the master
+// playlist ffmpeg produced so that every variant references the subtitle group
+// and each rendition carries the configured language, name and default flag.
+export function rewriteMasterPlaylist(
+  master: string,
+  subtitles: SubtitleTrack[],
+  groupId: string
+): string {
+  if (subtitles.length === 0) {
+    return master;
+  }
+  let mediaIndex = 0;
+  return master
+    .split('\n')
+    .map((line) => {
+      if (line.startsWith('#EXT-X-MEDIA:') && line.includes('TYPE=SUBTITLES')) {
+        const uri = /URI="([^"]*)"/.exec(line)?.[1] ?? '';
+        const group = /GROUP-ID="([^"]*)"/.exec(line)?.[1] ?? groupId;
+        const track = subtitles[Math.min(mediaIndex, subtitles.length - 1)];
+        mediaIndex++;
+        return [
+          '#EXT-X-MEDIA:TYPE=SUBTITLES',
+          `GROUP-ID="${group}"`,
+          `NAME="${track.name}"`,
+          `LANGUAGE="${track.language}"`,
+          'AUTOSELECT=YES',
+          `DEFAULT=${track.default ? 'YES' : 'NO'}`,
+          `URI="${uri}"`
+        ].join(',');
+      }
+      if (
+        line.startsWith('#EXT-X-STREAM-INF:') &&
+        !line.includes('SUBTITLES=')
+      ) {
+        return `${line},SUBTITLES="${groupId}"`;
+      }
+      return line;
+    })
+    .join('\n');
 }
