@@ -40,14 +40,15 @@ Live transcoding to HLS and optionally MPEG-DASH. Provides origin for CDN shield
 
 ### Environment Variables
 
-| Variable     | Description                                                                    | Default value |
-| ------------ | ------------------------------------------------------------------------------ | ------------- |
-| `PORT`       | API port to bind and listen to                                                 | `8000`        |
-| `ORIGIN_DIR` |  Location on disk where to write media segments and playlists                  | `/tmp/media`  |
-| `HLS_ONLY`   | Only output HLS + TS                                                           | `true`        |
-| `RTMP_PORT`  | RTMP port to bind and listen to                                                | `1935`        |
-| `STREAM_KEY` | RTMP streamkey                                                                 | `stream`      |
-| `OUTPUT_URL` | URL to upload media segments and playlists. If not set push to CDN is disabled |               |
+| Variable     | Description                                                                                                                                                        | Default value |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- |
+| `PORT`       | API port to bind and listen to                                                                                                                                     | `8000`        |
+| `ORIGIN_DIR` |  Location on disk where to write media segments and playlists                                                                                                      | `/tmp/media`  |
+| `HLS_ONLY`   | Only output HLS + TS                                                                                                                                               | `true`        |
+| `RTMP_PORT`  | RTMP port to bind and listen to                                                                                                                                    | `1935`        |
+| `STREAM_KEY` | RTMP streamkey                                                                                                                                                     | `stream`      |
+| `INPUT_URL`  | Optional `srt://` input URL. If set, the encoder dials this source in caller mode instead of listening for an RTMP publisher. If not set the RTMP listener is used |               |
+| `OUTPUT_URL` | URL to upload media segments and playlists. If not set push to CDN is disabled                                                                                     |               |
 
 ### CDN Pull
 
@@ -56,6 +57,18 @@ Run encoder with media dir at `/data`
 ```
 % ORIGIN_DIR=/data npm start
 ```
+
+### SRT input (caller mode)
+
+By default the encoder listens for an incoming RTMP publisher. Set `INPUT_URL` to an `srt://` URL to make the encoder dial a listener-mode SRT source in caller mode and pull the feed instead. This is useful for SRT contribution and for container platforms where no inbound UDP port can be exposed.
+
+```
+% ORIGIN_DIR=/data \
+  INPUT_URL='srt://<host>:<port>?latency=200000&passphrase=<secret>&streamid=<id>' \
+  npm start
+```
+
+Protocol knobs such as `latency` (microseconds), `passphrase`, `streamid` and `connect_timeout` (milliseconds) travel as query parameters on the URL and are handled by ffmpeg's srt reader directly, so any option the ffmpeg build supports can be used. While `INPUT_URL` is set the encoder stays in `starting` and retries the connection if the source is not up yet, until it either connects or the optional start-request `timeout` is reached.
 
 ### User Interface
 
