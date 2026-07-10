@@ -11,6 +11,21 @@ import { existsSync } from 'fs';
 import { HLSPullPush, MediaPackageOutput } from '@eyevinn/hls-pull-push';
 import { PullPushLogger } from './utils/pull_push_logger';
 
+// Default upper bound (seconds) on how long an SRT caller keeps re-dialing an
+// input source that is not up yet. Overridable per start request via the
+// EncoderStartRequest timeout field, or globally via the INPUT_DIAL_TIMEOUT env
+// var (wired in server.ts). Does not apply to the RTMP listener input.
+export const DEFAULT_INPUT_DIAL_TIMEOUT_SEC = 300;
+
+// Redact URL query strings (which may carry a passphrase) from any value that
+// is logged or placed into an error message.
+export function redactSecrets(value: string): string {
+  return value.replace(
+    /([a-z][a-z0-9+.-]*:\/\/[^\s?]*)\?[^\s]*/gi,
+    '$1?<redacted>'
+  );
+}
+
 export type BitrateLadderStep = {
   mediaType: 'video' | 'audio';
   bitrate: string;
@@ -46,6 +61,12 @@ export type EncoderOpts = {
   hlsOnly: boolean;
   outputUrl?: URL;
   originPort?: number;
+  // Optional input URL. When set, ffmpeg dials this source in caller mode
+  // instead of listening for an RTMP publisher. Only srt:// is supported.
+  inputUrl?: string;
+  // Optional override (seconds) for the caller-mode dial deadline. Falls back
+  // to DEFAULT_INPUT_DIAL_TIMEOUT_SEC. Ignored for the RTMP listener input.
+  inputDialTimeoutSec?: number;
 };
 
 type Process = {
@@ -79,13 +100,36 @@ export class Encoder {
         throw new Error(`Unsupported protocol ${this.opts.outputUrl.protocol}`);
       }
     }
+    if (this.opts.inputUrl) {
+      const redacted = redactSecrets(this.opts.inputUrl);
+      let parsed: URL;
+      try {
+        parsed = new URL(this.opts.inputUrl);
+      } catch {
+        throw new Error(`Invalid input URL '${redacted}': not a valid URL`);
+      }
+      if (parsed.protocol !== 'srt:') {
+        throw new Error(
+          `Unsupported input URL protocol '${parsed.protocol}', only srt:// is supported`
+        );
+      }
+      if (!parsed.hostname || !parsed.port) {
+        throw new Error(
+          `Invalid input URL '${redacted}': srt:// URL must include a host and port`
+        );
+      }
+    }
   }
 
   public async start(
     startRequest: EncoderStartRequest
   ): Promise<EncoderStartResponse> {
     const filterComplexArgs = generateFilterComplex(DEFAULT_LADDER);
-    const inputArgs = generateInput(this.rtmpPort, this.streamKey);
+    const inputArgs = generateInput(
+      this.rtmpPort,
+      this.streamKey,
+      this.opts.inputUrl
+    );
     const outputArgs = generateOutput(
       this.opts.hlsOnly,
       DEFAULT_LADDER,
@@ -95,23 +139,60 @@ export class Encoder {
 
     this.status = 'starting';
     const startAttemptTs = Date.now();
+    // Caller-mode input bounds the dial with a deadline: the per-request
+    // timeout if supplied, otherwise a configured/default deadline. The RTMP
+    // listener keeps its original behaviour (unbounded unless a timeout is set).
+    const dialDeadlineSec =
+      startRequest.timeout ??
+      this.opts.inputDialTimeoutSec ??
+      DEFAULT_INPUT_DIAL_TIMEOUT_SEC;
+    const dialDeadlineReached = () =>
+      Date.now() - startAttemptTs > dialDeadlineSec * 1000;
+    // Remove any stale HLS output from a previous run so a leftover index.m3u8
+    // cannot flip status to 'running' before this attempt actually connects.
+    await this.cleanup();
     const monitor = setInterval(async () => {
       if (this.ffmpeg) {
         if (!this.ffmpeg.process) {
-          if (!this.wantsToStop) {
-            Log().info(
-              'ffmpeg process unintentionally exited with code ' +
-                this.ffmpeg.exitCode
-            );
-            this.status = 'error';
-          } else {
+          if (this.wantsToStop) {
             Log().info(
               'ffmpeg process intentionally exited with code ' +
                 this.ffmpeg.exitCode
             );
             this.status = 'stopped';
+            clearInterval(monitor);
+          } else if (this.opts.inputUrl && this.status === 'starting') {
+            // Caller-mode input (e.g. SRT): the source may not be listening
+            // yet. A dial failure before we ever reached 'running' is not
+            // terminal, so retry the connection and stay in 'starting', up to
+            // the dial deadline. A connect that never succeeds is an input
+            // failure, so on deadline we land in 'error' (not 'stopped').
+            if (dialDeadlineReached()) {
+              Log().info(
+                'Dial deadline reached without connecting to input source'
+              );
+              await this.stop();
+              this.status = 'error';
+              clearInterval(monitor);
+            } else {
+              Log().info(
+                'ffmpeg exited before input was ready with code ' +
+                  this.ffmpeg.exitCode +
+                  ', retrying input connection'
+              );
+              // Clear any partial HLS output before re-dialing.
+              await this.cleanup();
+              await this.startFFmpeg(ffmpegArgs);
+            }
+          } else {
+            Log().info(
+              'ffmpeg process unintentionally exited with code ' +
+                this.ffmpeg.exitCode
+            );
+            await this.stopPullPush();
+            this.status = 'error';
+            clearInterval(monitor);
           }
-          clearInterval(monitor);
         } else {
           if (await this.hlsIndexIsAvailable()) {
             if (this.status != 'running') {
@@ -124,7 +205,18 @@ export class Encoder {
               }
             }
           }
-          if (startRequest.timeout) {
+          if (this.opts.inputUrl) {
+            // Caller-mode input: a connection that produces no output within
+            // the dial deadline is an input failure, so land in 'error'.
+            if (this.status === 'starting' && dialDeadlineReached()) {
+              Log().info(
+                'Dial deadline reached without connecting to input source'
+              );
+              await this.stop();
+              this.status = 'error';
+              clearInterval(monitor);
+            }
+          } else if (startRequest.timeout) {
             if (
               this.status != 'running' &&
               Date.now() - startAttemptTs > startRequest.timeout * 1000
@@ -184,15 +276,20 @@ export class Encoder {
       process: spawn(this.ffmpegExecutable, ffmpegArgs)
     };
     this.ffmpeg.process?.stderr?.on('data', (data) => {
-      Log().error(`${data}`);
+      // Redact URL query strings: a failed srt dial echoes the full input URL
+      // (passphrase, streamid) in ffmpeg's error output, and in caller mode
+      // failed dials are the common path. Note stderr data events are chunked,
+      // so a URL split across chunks could theoretically evade redaction; this
+      // covers the normal single-line case.
+      Log().error(redactSecrets(`${data}`));
     });
     this.ffmpeg.process?.on('exit', (code) => {
       Log().info('ffmpeg exited with code ' + code);
-      Log().info(this.ffmpeg?.process?.spawnargs);
+      Log().info(this.ffmpeg?.process?.spawnargs?.map(redactSecrets));
       Log().info(`  wantsToStop: ${this.wantsToStop}`);
       if (this.ffmpeg) {
         this.ffmpeg.process = undefined;
-        this.ffmpeg.exitCode = code || this.wantsToStop ? 0 : 1;
+        this.ffmpeg.exitCode = code || (this.wantsToStop ? 0 : 1);
       }
     });
   }
@@ -273,7 +370,10 @@ export class Encoder {
   private async cleanup() {
     try {
       Log().debug('Cleaning up HLS files');
-      await rm(path.join(this.mediaDir, '/hls'), { recursive: true });
+      await rm(path.join(this.mediaDir, '/hls'), {
+        recursive: true,
+        force: true
+      });
     } catch (err) {
       Log().debug(err);
     }
@@ -348,7 +448,18 @@ export function generateFilterComplex(ladder: BitrateLadderStep[]): string[] {
     .concat(audioMaps.flat());
 }
 
-export function generateInput(rtmpPort: number, streamKey: string): string[] {
+export function generateInput(
+  rtmpPort: number,
+  streamKey: string,
+  inputUrl?: string
+): string[] {
+  if (inputUrl) {
+    // Caller-mode input: ffmpeg dials the given source (e.g. an srt:// URL in
+    // caller mode) and pulls the feed. Any protocol knobs (latency, passphrase,
+    // streamid, connect timeout, ...) travel as query parameters on the URL and
+    // are parsed by ffmpeg itself, so no option strings are hardcoded here.
+    return ['-y', '-loglevel', 'error', '-i', inputUrl];
+  }
   return [
     '-y',
     '-loglevel',

@@ -20,7 +20,11 @@ const encoderOpts = {
   outputUrl: process.env.OUTPUT_URL
     ? new URL(process.env.OUTPUT_URL)
     : undefined,
-  originPort: PORT
+  originPort: PORT,
+  inputUrl: process.env.INPUT_URL || undefined,
+  inputDialTimeoutSec: process.env.INPUT_DIAL_TIMEOUT
+    ? Number(process.env.INPUT_DIAL_TIMEOUT)
+    : undefined
 };
 const encoder = new Encoder(
   process.env.FFMPEG_EXECUTABLE || 'ffmpeg',
