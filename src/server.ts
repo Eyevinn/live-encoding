@@ -33,6 +33,10 @@ const encoderOpts = {
     ? new URL(process.env.OUTPUT_URL)
     : undefined,
   originPort: PORT,
+  inputUrl: process.env.INPUT_URL || undefined,
+  inputDialTimeoutSec: process.env.INPUT_DIAL_TIMEOUT
+    ? Number(process.env.INPUT_DIAL_TIMEOUT)
+    : undefined,
   subtitles
 };
 const encoder = new Encoder(

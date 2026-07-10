@@ -15,8 +15,32 @@ import {
   rm,
   writeFile
 } from 'fs/promises';
+import { existsSync } from 'fs';
 import { HLSPullPush, MediaPackageOutput } from '@eyevinn/hls-pull-push';
 import { PullPushLogger } from './utils/pull_push_logger';
+
+// Default upper bound (seconds) on how long an SRT caller keeps re-dialing an
+// input source that is not up yet. Overridable per start request via the
+// EncoderStartRequest timeout field, or globally via the INPUT_DIAL_TIMEOUT env
+// var (wired in server.ts). Does not apply to the RTMP listener input.
+export const DEFAULT_INPUT_DIAL_TIMEOUT_SEC = 300;
+
+// HLS subtitle rendition group id used in the master playlist.
+const SUBTITLE_GROUP_ID = 'subs';
+
+// IO timeout for fetching a sidecar subtitle source, in microseconds (ffmpeg
+// -rw_timeout). Without it a stalled subtitle server would pin the encoder in
+// 'starting' forever with no output once the input source connects.
+const SUBTITLE_RW_TIMEOUT_US = 15_000_000;
+
+// Redact URL query strings (which may carry a passphrase) from any value that
+// is logged or placed into an error message.
+export function redactSecrets(value: string): string {
+  return value.replace(
+    /([a-z][a-z0-9+.-]*:\/\/[^\s?]*)\?[^\s]*/gi,
+    '$1?<redacted>'
+  );
+}
 
 export type BitrateLadderStep = {
   mediaType: 'video' | 'audio';
@@ -64,16 +88,15 @@ export type EncoderOpts = {
   hlsOnly: boolean;
   outputUrl?: URL;
   originPort?: number;
+  // Optional input URL. When set, ffmpeg dials this source in caller mode
+  // instead of listening for an RTMP publisher. Only srt:// is supported.
+  inputUrl?: string;
+  // Optional override (seconds) for the caller-mode dial deadline. Falls back
+  // to DEFAULT_INPUT_DIAL_TIMEOUT_SEC. Ignored for the RTMP listener input.
+  inputDialTimeoutSec?: number;
+  // Optional sidecar WebVTT subtitle tracks passed through into the HLS output.
   subtitles?: SubtitleTrack[];
 };
-
-// HLS subtitle rendition group id used in the master playlist.
-const SUBTITLE_GROUP_ID = 'subs';
-
-// IO timeout for fetching a sidecar subtitle source, in microseconds (ffmpeg
-// -rw_timeout). Without it a stalled subtitle server would pin the encoder in
-// 'starting' forever with no output once the RTMP publisher connects.
-const SUBTITLE_RW_TIMEOUT_US = 15_000_000;
 
 type Process = {
   exitCode: number;
@@ -108,6 +131,25 @@ export class Encoder {
         throw new Error(`Unsupported protocol ${this.opts.outputUrl.protocol}`);
       }
     }
+    if (this.opts.inputUrl) {
+      const redacted = redactSecrets(this.opts.inputUrl);
+      let parsed: URL;
+      try {
+        parsed = new URL(this.opts.inputUrl);
+      } catch {
+        throw new Error(`Invalid input URL '${redacted}': not a valid URL`);
+      }
+      if (parsed.protocol !== 'srt:') {
+        throw new Error(
+          `Unsupported input URL protocol '${parsed.protocol}', only srt:// is supported`
+        );
+      }
+      if (!parsed.hostname || !parsed.port) {
+        throw new Error(
+          `Invalid input URL '${redacted}': srt:// URL must include a host and port`
+        );
+      }
+    }
   }
 
   public async start(
@@ -115,7 +157,12 @@ export class Encoder {
   ): Promise<EncoderStartResponse> {
     const subtitles = this.opts.subtitles ?? [];
     const filterComplexArgs = generateFilterComplex(DEFAULT_LADDER);
-    const inputArgs = generateInput(this.rtmpPort, this.streamKey, subtitles);
+    const inputArgs = generateInput(
+      this.rtmpPort,
+      this.streamKey,
+      this.opts.inputUrl,
+      subtitles
+    );
     const outputArgs = generateOutput(
       this.opts.hlsOnly,
       DEFAULT_LADDER,
@@ -125,32 +172,68 @@ export class Encoder {
     const ffmpegArgs = inputArgs.concat(filterComplexArgs).concat(outputArgs);
 
     this.status = 'starting';
-    this.subtitleMasterFinalized = false;
-    this.subtitleFinalizeAttempts = 0;
     const startAttemptTs = Date.now();
+    // Caller-mode input bounds the dial with a deadline: the per-request
+    // timeout if supplied, otherwise a configured/default deadline. The RTMP
+    // listener keeps its original behaviour (unbounded unless a timeout is set).
+    const dialDeadlineSec =
+      startRequest.timeout ??
+      this.opts.inputDialTimeoutSec ??
+      DEFAULT_INPUT_DIAL_TIMEOUT_SEC;
+    const dialDeadlineReached = () =>
+      Date.now() - startAttemptTs > dialDeadlineSec * 1000;
+    // Remove any stale HLS output from a previous run so a leftover index.m3u8
+    // cannot flip status to 'running' before this attempt actually connects.
+    await this.cleanup();
     const monitor = setInterval(async () => {
       if (this.ffmpeg) {
         if (!this.ffmpeg.process) {
-          if (!this.wantsToStop) {
-            Log().info(
-              'ffmpeg process unintentionally exited with code ' +
-                this.ffmpeg.exitCode
-            );
-            this.status = 'error';
-          } else {
+          if (this.wantsToStop) {
             Log().info(
               'ffmpeg process intentionally exited with code ' +
                 this.ffmpeg.exitCode
             );
             this.status = 'stopped';
+            clearInterval(monitor);
+          } else if (this.opts.inputUrl && this.status === 'starting') {
+            // Caller-mode input (e.g. SRT): the source may not be listening
+            // yet. A dial failure before we ever reached 'running' is not
+            // terminal, so retry the connection and stay in 'starting', up to
+            // the dial deadline. A connect that never succeeds is an input
+            // failure, so on deadline we land in 'error' (not 'stopped').
+            if (dialDeadlineReached()) {
+              Log().info(
+                'Dial deadline reached without connecting to input source'
+              );
+              await this.stop();
+              this.status = 'error';
+              clearInterval(monitor);
+            } else {
+              Log().info(
+                'ffmpeg exited before input was ready with code ' +
+                  this.ffmpeg.exitCode +
+                  ', retrying input connection'
+              );
+              // Clear any partial HLS output before re-dialing.
+              await this.cleanup();
+              await this.startFFmpeg(ffmpegArgs);
+            }
+          } else {
+            Log().info(
+              'ffmpeg process unintentionally exited with code ' +
+                this.ffmpeg.exitCode
+            );
+            await this.stopPullPush();
+            this.status = 'error';
+            clearInterval(monitor);
           }
-          clearInterval(monitor);
         } else {
           if (await this.hlsIndexIsAvailable()) {
             // With subtitles configured the master must be finalized before the
             // channel is declared running, otherwise a downstream one-shot
             // consumer (the pull-push fetcher) can cache the un-broadened
-            // master for the whole session.
+            // master for the whole session. A not-yet-finalized master keeps us
+            // in 'starting' and is retried on the next tick.
             const subtitlesReady =
               subtitles.length === 0 ||
               (await this.finalizeSubtitleMaster(DEFAULT_LADDER));
@@ -164,7 +247,18 @@ export class Encoder {
               }
             }
           }
-          if (startRequest.timeout) {
+          if (this.opts.inputUrl) {
+            // Caller-mode input: a connection that produces no output within
+            // the dial deadline is an input failure, so land in 'error'.
+            if (this.status === 'starting' && dialDeadlineReached()) {
+              Log().info(
+                'Dial deadline reached without connecting to input source'
+              );
+              await this.stop();
+              this.status = 'error';
+              clearInterval(monitor);
+            }
+          } else if (startRequest.timeout) {
             if (
               this.status != 'running' &&
               Date.now() - startAttemptTs > startRequest.timeout * 1000
@@ -266,27 +360,35 @@ export class Encoder {
   }
 
   private async startFFmpeg(ffmpegArgs: string[]) {
-    // Purge any output left behind by a previous run (an unintentional exit
-    // only clears state on an intentional stop). A stale, already-rewritten
-    // master must not be read by the subtitle finalizer of this run.
-    const hlsDir = path.join(this.mediaDir, '/hls');
-    await rm(hlsDir, { recursive: true, force: true });
-    await mkdir(hlsDir, { recursive: true });
+    if (!existsSync(path.join(this.mediaDir, '/hls'))) {
+      await mkdir(path.join(this.mediaDir, '/hls'), { recursive: true });
+    }
+    // The hls output dir has just been purged by cleanup() (initial start and
+    // every re-dial), so any previously finalized master no longer exists.
+    // Reset the subtitle finalize state per attempt, otherwise a re-dial after
+    // a briefly-connected attempt would leave the fresh master un-broadened.
+    this.subtitleMasterFinalized = false;
+    this.subtitleFinalizeAttempts = 0;
     this.wantsToStop = false;
     this.ffmpeg = {
       exitCode: 0,
       process: spawn(this.ffmpegExecutable, ffmpegArgs)
     };
     this.ffmpeg.process?.stderr?.on('data', (data) => {
-      Log().error(`${data}`);
+      // Redact URL query strings: a failed srt dial echoes the full input URL
+      // (passphrase, streamid) in ffmpeg's error output, and in caller mode
+      // failed dials are the common path. Note stderr data events are chunked,
+      // so a URL split across chunks could theoretically evade redaction; this
+      // covers the normal single-line case.
+      Log().error(redactSecrets(`${data}`));
     });
     this.ffmpeg.process?.on('exit', (code) => {
       Log().info('ffmpeg exited with code ' + code);
-      Log().info(this.ffmpeg?.process?.spawnargs);
+      Log().info(this.ffmpeg?.process?.spawnargs?.map(redactSecrets));
       Log().info(`  wantsToStop: ${this.wantsToStop}`);
       if (this.ffmpeg) {
         this.ffmpeg.process = undefined;
-        this.ffmpeg.exitCode = code || this.wantsToStop ? 0 : 1;
+        this.ffmpeg.exitCode = code || (this.wantsToStop ? 0 : 1);
       }
     });
   }
@@ -367,7 +469,10 @@ export class Encoder {
   private async cleanup() {
     try {
       Log().debug('Cleaning up HLS files');
-      await rm(path.join(this.mediaDir, '/hls'), { recursive: true });
+      await rm(path.join(this.mediaDir, '/hls'), {
+        recursive: true,
+        force: true
+      });
     } catch (err) {
       Log().debug(err);
     }
@@ -445,20 +550,28 @@ export function generateFilterComplex(ladder: BitrateLadderStep[]): string[] {
 export function generateInput(
   rtmpPort: number,
   streamKey: string,
+  inputUrl?: string,
   subtitles: SubtitleTrack[] = []
 ): string[] {
-  const args = [
-    '-y',
-    '-loglevel',
-    'error',
-    '-listen',
-    '1',
-    '-i',
-    `rtmp://0.0.0.0:${rtmpPort}/live/${streamKey}`
-  ];
-  // Each sidecar WebVTT source is an extra input after the primary A/V input.
-  // -rw_timeout bounds a stalled or unreachable subtitle server so it cannot
-  // hang the encode indefinitely once the RTMP publisher has connected.
+  // Primary A/V input: either an RTMP listener or, in caller mode, ffmpeg dials
+  // the given source (e.g. an srt:// URL). Any protocol knobs (latency,
+  // passphrase, streamid, connect timeout, ...) travel as query parameters on
+  // the URL and are parsed by ffmpeg itself, so no option strings are hardcoded.
+  const args = inputUrl
+    ? ['-y', '-loglevel', 'error', '-i', inputUrl]
+    : [
+        '-y',
+        '-loglevel',
+        'error',
+        '-listen',
+        '1',
+        '-i',
+        `rtmp://0.0.0.0:${rtmpPort}/live/${streamKey}`
+      ];
+  // Each sidecar WebVTT source is an extra input after the primary A/V input,
+  // in both listener and caller mode, so the subtitle stream is always input
+  // index 1 (matched by generateOutput's -map). -rw_timeout bounds a stalled
+  // or unreachable subtitle server so it cannot hang the encode indefinitely.
   for (const subtitle of subtitles) {
     args.push('-rw_timeout', `${SUBTITLE_RW_TIMEOUT_US}`, '-i', subtitle.url);
   }
