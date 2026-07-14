@@ -8,10 +8,14 @@ import {
   BitrateLadderStep,
   DEFAULT_INPUT_DIAL_TIMEOUT_SEC,
   Encoder,
+  SubtitleTrack,
+  finalizeSubtitleMasterFile,
   generateFilterComplex,
   generateInput,
   generateOutput,
-  redactSecrets
+  masterIsComplete,
+  redactSecrets,
+  rewriteMasterPlaylist
 } from './encoder';
 
 jest.mock('child_process', () => ({
@@ -32,7 +36,10 @@ jest.mock('fs/promises', () => {
     ...actual,
     access: jest.fn(actual.access),
     mkdir: jest.fn(actual.mkdir),
-    rm: jest.fn(actual.rm)
+    rm: jest.fn(actual.rm),
+    readFile: jest.fn(actual.readFile),
+    writeFile: jest.fn(actual.writeFile),
+    rename: jest.fn(actual.rename)
   };
 });
 
@@ -415,5 +422,304 @@ describe('encoder clears stale HLS output before starting', () => {
 
     expect(fs.existsSync(path.join(mediaDir, 'hls', 'index.m3u8'))).toBe(false);
     expect(await encoder.getStatus()).toBe('starting');
+  });
+});
+
+const subtitleTracks: SubtitleTrack[] = [
+  {
+    url: 'https://example.com/subs/en.vtt',
+    language: 'en',
+    name: 'English',
+    default: true
+  }
+];
+
+// A two-variant master exactly as ffmpeg 6.1 writes it: the subtitle group is
+// advertised only on the variant that carries the subtitle stream (media_1).
+const ffmpegMaster = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:6',
+  '#EXT-X-STREAM-INF:BANDWIDTH=4540800,RESOLUTION=1280x720,CODECS="avc1.f4001f,mp4a.40.2"',
+  'media_0.m3u8',
+  '',
+  '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="subtitle_1",DEFAULT=YES,URI="media_1_vtt.m3u8"',
+  '#EXT-X-STREAM-INF:BANDWIDTH=3440800,RESOLUTION=640x360,CODECS="avc1.f4001e,mp4a.40.2",SUBTITLES="subs"',
+  'media_1.m3u8',
+  ''
+].join('\n');
+
+// The same master after finalizing: every variant references the group and the
+// rendition carries the configured labels.
+const finalizedMaster = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:6',
+  '#EXT-X-STREAM-INF:BANDWIDTH=4540800,RESOLUTION=1280x720,CODECS="avc1.f4001f,mp4a.40.2",SUBTITLES="subs"',
+  'media_0.m3u8',
+  '',
+  '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",AUTOSELECT=YES,DEFAULT=YES,URI="media_1_vtt.m3u8"',
+  '#EXT-X-STREAM-INF:BANDWIDTH=3440800,RESOLUTION=640x360,CODECS="avc1.f4001e,mp4a.40.2",SUBTITLES="subs"',
+  'media_1.m3u8',
+  ''
+].join('\n');
+
+describe('subtitle passthrough', () => {
+  test('generateInput appends a bounded sidecar input in RTMP mode', () => {
+    expect(generateInput(1935, 'stream', undefined, subtitleTracks)).toEqual([
+      '-y',
+      '-loglevel',
+      'error',
+      '-listen',
+      '1',
+      '-i',
+      'rtmp://0.0.0.0:1935/live/stream',
+      '-rw_timeout',
+      '15000000',
+      '-i',
+      'https://example.com/subs/en.vtt'
+    ]);
+  });
+
+  test('generateInput keeps SRT input first and appends the sidecar in caller mode', () => {
+    expect(
+      generateInput(
+        1935,
+        'stream',
+        'srt://source:9000?streamid=abc',
+        subtitleTracks
+      )
+    ).toEqual([
+      '-y',
+      '-loglevel',
+      'error',
+      '-i',
+      'srt://source:9000?streamid=abc',
+      '-rw_timeout',
+      '15000000',
+      '-i',
+      'https://example.com/subs/en.vtt'
+    ]);
+  });
+
+  test('generateOutput maps the sidecar as input 1 and groups it on the last variant', () => {
+    const args = generateOutput(true, testLadder, '/data', subtitleTracks);
+    // The sidecar is input index 1 in both RTMP and SRT mode (single primary
+    // input), so -map 1:0 resolves to the subtitle in either case.
+    expect(args.slice(0, 4)).toEqual(['-map', '1:0', '-c:s', 'webvtt']);
+    const varStreamMapIndex = args.indexOf('-var_stream_map');
+    expect(args[varStreamMapIndex + 1]).toEqual(
+      'v:0,a:0 v:1,a:1,s:0,sgroup:subs'
+    );
+  });
+
+  test('generateOutput is byte-identical to the no-arg form without subtitles', () => {
+    expect(generateOutput(true, testLadder, '/data', [])).toEqual(
+      generateOutput(true, testLadder, '/data')
+    );
+  });
+
+  test('rewriteMasterPlaylist matches the golden finalized master', () => {
+    expect(rewriteMasterPlaylist(ffmpegMaster, subtitleTracks, 'subs')).toEqual(
+      finalizedMaster
+    );
+  });
+
+  test('rewriteMasterPlaylist is idempotent', () => {
+    const once = rewriteMasterPlaylist(ffmpegMaster, subtitleTracks, 'subs');
+    const twice = rewriteMasterPlaylist(once, subtitleTracks, 'subs');
+    expect(twice).toEqual(once);
+  });
+
+  test('rewriteMasterPlaylist handles a single-variant master', () => {
+    const master = [
+      '#EXTM3U',
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="subtitle_0",DEFAULT=YES,URI="media_0_vtt.m3u8"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=4540800,RESOLUTION=1280x720,SUBTITLES="subs"',
+      'media_0.m3u8'
+    ].join('\n');
+    const rewritten = rewriteMasterPlaylist(master, subtitleTracks, 'subs');
+    const streamInf = rewritten
+      .split('\n')
+      .filter((line) => line.startsWith('#EXT-X-STREAM-INF:'));
+    expect(streamInf.length).toEqual(1);
+    expect(streamInf[0]).toContain('SUBTITLES="subs"');
+    expect(rewritten).toContain('NAME="English"');
+  });
+
+  test('rewriteMasterPlaylist clamps mediaIndex for extra MEDIA lines', () => {
+    const master = [
+      '#EXTM3U',
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="a",URI="a.m3u8"',
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="b",URI="b.m3u8"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=1,SUBTITLES="subs"',
+      'media_0.m3u8'
+    ].join('\n');
+    const media = rewriteMasterPlaylist(master, subtitleTracks, 'subs')
+      .split('\n')
+      .filter((line) => line.startsWith('#EXT-X-MEDIA:'));
+    expect(media[0]).toContain('NAME="English"');
+    expect(media[0]).toContain('URI="a.m3u8"');
+    expect(media[1]).toContain('NAME="English"');
+    expect(media[1]).toContain('URI="b.m3u8"');
+  });
+
+  test('rewriteMasterPlaylist leaves a MEDIA line without URI alone', () => {
+    const master = [
+      '#EXTM3U',
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="x"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=1',
+      'media_0.m3u8'
+    ].join('\n');
+    const rewritten = rewriteMasterPlaylist(master, subtitleTracks, 'subs');
+    expect(rewritten).toContain(
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="x"'
+    );
+    expect(rewritten).not.toContain('URI=""');
+  });
+
+  test('rewriteMasterPlaylist leaves the playlist untouched without subtitles', () => {
+    const master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nmedia_0.m3u8\n';
+    expect(rewriteMasterPlaylist(master, [], 'subs')).toEqual(master);
+  });
+
+  test('masterIsComplete requires the subtitle rendition and every variant', () => {
+    expect(masterIsComplete(ffmpegMaster, 2)).toBe(true);
+    const noMedia = ffmpegMaster
+      .split('\n')
+      .filter((line) => !line.startsWith('#EXT-X-MEDIA:'))
+      .join('\n');
+    expect(masterIsComplete(noMedia, 2)).toBe(false);
+    expect(masterIsComplete(ffmpegMaster, 3)).toBe(false);
+  });
+});
+
+describe('finalizeSubtitleMasterFile', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await realFsPromises.mkdtemp(path.join(os.tmpdir(), 'le-subs-'));
+  });
+
+  afterEach(async () => {
+    await realFsPromises.rm(dir, { recursive: true, force: true });
+  });
+
+  test('finalizes a complete master on disk, atomically and idempotently', async () => {
+    const master = path.join(dir, 'index.m3u8');
+    await realFsPromises.writeFile(master, ffmpegMaster);
+
+    const first = await finalizeSubtitleMasterFile(master, subtitleTracks, 2);
+    expect(first).toBe(true);
+    expect(await realFsPromises.readFile(master, 'utf-8')).toEqual(
+      finalizedMaster
+    );
+    // No temp file left behind by the rename.
+    let tmpExists = true;
+    try {
+      await realFsPromises.readFile(`${master}.tmp`, 'utf-8');
+    } catch {
+      tmpExists = false;
+    }
+    expect(tmpExists).toBe(false);
+
+    const second = await finalizeSubtitleMasterFile(master, subtitleTracks, 2);
+    expect(second).toBe(true);
+    expect(await realFsPromises.readFile(master, 'utf-8')).toEqual(
+      finalizedMaster
+    );
+  });
+
+  test('refuses to rewrite an incomplete master and leaves it untouched', async () => {
+    const master = path.join(dir, 'index.m3u8');
+    const incomplete = ffmpegMaster
+      .split('\n')
+      .filter((line) => !line.startsWith('#EXT-X-MEDIA:'))
+      .join('\n');
+    await realFsPromises.writeFile(master, incomplete);
+
+    const done = await finalizeSubtitleMasterFile(master, subtitleTracks, 2);
+    expect(done).toBe(false);
+    expect(await realFsPromises.readFile(master, 'utf-8')).toEqual(incomplete);
+  });
+});
+
+describe('encoder subtitle finalize gates running in SRT mode', () => {
+  const incompleteMaster = ffmpegMaster
+    .split('\n')
+    .filter((line) => !line.startsWith('#EXT-X-MEDIA:'))
+    .join('\n');
+
+  // In-memory master content the mocked fs serves to the encoder. null means
+  // ffmpeg has not written an HLS index yet. Assigning it simulates ffmpeg
+  // producing output. Filesystem is fully mocked so the monitor's transitions
+  // are deterministic under fake timers (real fs would resolve off the timer).
+  let master: string | null;
+  let written: string | null;
+
+  const buildWithSubs = () =>
+    new Encoder('ffmpeg', 'packager', 1935, 'stream', '/media', {
+      hlsOnly: true,
+      inputUrl: 'srt://source:9000',
+      subtitles: subtitleTracks
+    });
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    spawnedProcs.length = 0;
+    mockedSpawn.mockReset();
+    // Live process: it never exits, so the encoder never re-dials.
+    mockedSpawn.mockImplementation(() => makeProc());
+    master = null;
+    written = null;
+    (fs.existsSync as jest.Mock).mockReturnValue(true);
+    (fsPromises.mkdir as jest.Mock).mockResolvedValue(undefined);
+    (fsPromises.rm as jest.Mock).mockResolvedValue(undefined);
+    (fsPromises.rename as jest.Mock).mockResolvedValue(undefined);
+    (fsPromises.access as jest.Mock).mockImplementation(async () => {
+      if (master === null) throw new Error('ENOENT');
+    });
+    (fsPromises.readFile as jest.Mock).mockImplementation(async () => {
+      if (master === null) throw new Error('ENOENT');
+      return master;
+    });
+    (fsPromises.writeFile as jest.Mock).mockImplementation(async (_p, data) => {
+      written = `${data}`;
+      // The rewrite writes to a temp file then renames it over the master.
+      master = `${data}`;
+    });
+  });
+
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+    (fs.existsSync as jest.Mock).mockImplementation(realFs.existsSync);
+    (fsPromises.mkdir as jest.Mock).mockImplementation(realFsPromises.mkdir);
+    (fsPromises.rm as jest.Mock).mockImplementation(realFsPromises.rm);
+    (fsPromises.access as jest.Mock).mockImplementation(realFsPromises.access);
+    (fsPromises.rename as jest.Mock).mockImplementation(realFsPromises.rename);
+    (fsPromises.readFile as jest.Mock).mockImplementation(
+      realFsPromises.readFile
+    );
+    (fsPromises.writeFile as jest.Mock).mockImplementation(
+      realFsPromises.writeFile
+    );
+  });
+
+  test('stays starting until the master is complete, then finalizes and runs', async () => {
+    const encoder = buildWithSubs();
+    await encoder.start({});
+
+    // An incomplete master (HLS index exists but has no subtitle rendition yet)
+    // must keep the encoder in starting: the finalize gate refuses it.
+    master = incompleteMaster;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('starting');
+    expect(written).toBeNull();
+
+    // Once ffmpeg has written a complete master, the gate opens: the master is
+    // broadened to every variant and the channel goes running.
+    master = ffmpegMaster;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('running');
+    expect(written).toEqual(finalizedMaster);
   });
 });

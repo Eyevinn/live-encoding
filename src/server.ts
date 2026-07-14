@@ -1,6 +1,7 @@
 import fastifyStatic from '@fastify/static';
 import api from './api';
 import { Encoder } from './encoder';
+import { parseSubtitles } from './config';
 import routeEncoder from './routes/encoder';
 import routeOrigin from './routes/origin';
 import { Log } from './utils/log';
@@ -12,11 +13,22 @@ const mediaDir = process.env.ORIGIN_DIR || '/tmp/media';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8000;
 
+const hlsOnly = process.env.HLS_ONLY
+  ? process.env.HLS_ONLY.toLowerCase() === 'true' ||
+    process.env.HLS_ONLY === '1'
+  : true;
+
+const subtitles = parseSubtitles();
+
+if (!hlsOnly && subtitles.length > 0) {
+  Log().warn(
+    'SUBTITLE_URL is set but HLS_ONLY is false, subtitles are only carried in ' +
+      'the HLS output and will be discarded'
+  );
+}
+
 const encoderOpts = {
-  hlsOnly: process.env.HLS_ONLY
-    ? process.env.HLS_ONLY.toLowerCase() === 'true' ||
-      process.env.HLS_ONLY === '1'
-    : true,
+  hlsOnly,
   outputUrl: process.env.OUTPUT_URL
     ? new URL(process.env.OUTPUT_URL)
     : undefined,
@@ -24,7 +36,8 @@ const encoderOpts = {
   inputUrl: process.env.INPUT_URL || undefined,
   inputDialTimeoutSec: process.env.INPUT_DIAL_TIMEOUT
     ? Number(process.env.INPUT_DIAL_TIMEOUT)
-    : undefined
+    : undefined,
+  subtitles
 };
 const encoder = new Encoder(
   process.env.FFMPEG_EXECUTABLE || 'ffmpeg',

@@ -6,7 +6,15 @@ import {
 } from './model';
 import { Log } from './utils/log';
 import path from 'path';
-import { access, constants, mkdir, rm } from 'fs/promises';
+import {
+  access,
+  constants,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile
+} from 'fs/promises';
 import { existsSync } from 'fs';
 import { HLSPullPush, MediaPackageOutput } from '@eyevinn/hls-pull-push';
 import { PullPushLogger } from './utils/pull_push_logger';
@@ -16,6 +24,14 @@ import { PullPushLogger } from './utils/pull_push_logger';
 // EncoderStartRequest timeout field, or globally via the INPUT_DIAL_TIMEOUT env
 // var (wired in server.ts). Does not apply to the RTMP listener input.
 export const DEFAULT_INPUT_DIAL_TIMEOUT_SEC = 300;
+
+// HLS subtitle rendition group id used in the master playlist.
+const SUBTITLE_GROUP_ID = 'subs';
+
+// IO timeout for fetching a sidecar subtitle source, in microseconds (ffmpeg
+// -rw_timeout). Without it a stalled subtitle server would pin the encoder in
+// 'starting' forever with no output once the input source connects.
+const SUBTITLE_RW_TIMEOUT_US = 15_000_000;
 
 // Redact URL query strings (which may carry a passphrase) from any value that
 // is logged or placed into an error message.
@@ -57,6 +73,17 @@ const DEFAULT_LADDER: BitrateLadderStep[] = [
   }
 ];
 
+export type SubtitleTrack = {
+  // Sidecar WebVTT source URL, fetched alongside the A/V input.
+  url: string;
+  // BCP-47 language tag, e.g. 'en' or 'sv'.
+  language: string;
+  // Human readable rendition name, e.g. 'English'.
+  name: string;
+  // Whether this rendition is the default subtitle for the group.
+  default: boolean;
+};
+
 export type EncoderOpts = {
   hlsOnly: boolean;
   outputUrl?: URL;
@@ -67,6 +94,8 @@ export type EncoderOpts = {
   // Optional override (seconds) for the caller-mode dial deadline. Falls back
   // to DEFAULT_INPUT_DIAL_TIMEOUT_SEC. Ignored for the RTMP listener input.
   inputDialTimeoutSec?: number;
+  // Optional sidecar WebVTT subtitle tracks passed through into the HLS output.
+  subtitles?: SubtitleTrack[];
 };
 
 type Process = {
@@ -78,6 +107,8 @@ export class Encoder {
   private status: EncoderStatus = 'idle';
   private wantsToStop = false;
   private pullPushStarted = false;
+  private subtitleMasterFinalized = false;
+  private subtitleFinalizeAttempts = 0;
   private ffmpeg?: Process;
   private pullPush?: HLSPullPush;
   private fetcherId?: string;
@@ -124,16 +155,19 @@ export class Encoder {
   public async start(
     startRequest: EncoderStartRequest
   ): Promise<EncoderStartResponse> {
+    const subtitles = this.opts.subtitles ?? [];
     const filterComplexArgs = generateFilterComplex(DEFAULT_LADDER);
     const inputArgs = generateInput(
       this.rtmpPort,
       this.streamKey,
-      this.opts.inputUrl
+      this.opts.inputUrl,
+      subtitles
     );
     const outputArgs = generateOutput(
       this.opts.hlsOnly,
       DEFAULT_LADDER,
-      this.mediaDir
+      this.mediaDir,
+      subtitles
     );
     const ffmpegArgs = inputArgs.concat(filterComplexArgs).concat(outputArgs);
 
@@ -195,7 +229,15 @@ export class Encoder {
           }
         } else {
           if (await this.hlsIndexIsAvailable()) {
-            if (this.status != 'running') {
+            // With subtitles configured the master must be finalized before the
+            // channel is declared running, otherwise a downstream one-shot
+            // consumer (the pull-push fetcher) can cache the un-broadened
+            // master for the whole session. A not-yet-finalized master keeps us
+            // in 'starting' and is retried on the next tick.
+            const subtitlesReady =
+              subtitles.length === 0 ||
+              (await this.finalizeSubtitleMaster(DEFAULT_LADDER));
+            if (subtitlesReady && this.status != 'running') {
               Log().debug(
                 'We have HLS index file available, change status to running'
               );
@@ -255,6 +297,57 @@ export class Encoder {
     return this.status === 'running' ? '/origin/hls/index.m3u8' : undefined;
   }
 
+  // ffmpeg attaches the subtitle group to a single variant only (see
+  // generateOutput). Once ffmpeg has written a complete master playlist,
+  // broaden the SUBTITLES reference to every variant and apply the configured
+  // labels so the rendition is selectable across the whole ABR ladder.
+  //
+  // Returns true when the master has been finalized (this process performed the
+  // rewrite), false while it is not yet safe to do so. The caller uses this as
+  // a readiness gate, so a not-yet-complete or unreadable master keeps the
+  // encoder in 'starting' and is retried on the next monitor tick rather than
+  // being declared running with an un-broadened master.
+  private async finalizeSubtitleMaster(
+    ladder: BitrateLadderStep[]
+  ): Promise<boolean> {
+    const subtitles = this.opts.subtitles ?? [];
+    if (subtitles.length === 0 || this.subtitleMasterFinalized) {
+      return true;
+    }
+    const master = path.join(this.mediaDir, '/hls/index.m3u8');
+    const expectedVariants = ladder.filter(
+      (step) => step.mediaType === 'video'
+    ).length;
+    this.subtitleFinalizeAttempts++;
+    try {
+      const done = await finalizeSubtitleMasterFile(
+        master,
+        subtitles,
+        expectedVariants
+      );
+      if (!done) {
+        // ffmpeg has not written a complete master with the subtitle rendition
+        // yet. Stay in 'starting' and retry. Surfaced only after repeated
+        // misses so a genuinely stuck encode is visible at operator log levels.
+        if (this.subtitleFinalizeAttempts >= 3) {
+          Log().warn(
+            'HLS master playlist not ready for subtitle finalize after ' +
+              `${this.subtitleFinalizeAttempts} attempts (missing subtitle ` +
+              'rendition or expected variants), still waiting'
+          );
+        }
+        return false;
+      }
+      this.subtitleMasterFinalized = true;
+      Log().info('Wired subtitle group into HLS master playlist');
+      return true;
+    } catch (err) {
+      Log().error('Failed to finalize subtitle master playlist');
+      Log().error(err);
+      return false;
+    }
+  }
+
   private async hlsIndexIsAvailable(): Promise<boolean> {
     const file = path.join(this.mediaDir, '/hls/index.m3u8');
     try {
@@ -270,6 +363,12 @@ export class Encoder {
     if (!existsSync(path.join(this.mediaDir, '/hls'))) {
       await mkdir(path.join(this.mediaDir, '/hls'), { recursive: true });
     }
+    // The hls output dir has just been purged by cleanup() (initial start and
+    // every re-dial), so any previously finalized master no longer exists.
+    // Reset the subtitle finalize state per attempt, otherwise a re-dial after
+    // a briefly-connected attempt would leave the fresh master un-broadened.
+    this.subtitleMasterFinalized = false;
+    this.subtitleFinalizeAttempts = 0;
     this.wantsToStop = false;
     this.ffmpeg = {
       exitCode: 0,
@@ -451,40 +550,68 @@ export function generateFilterComplex(ladder: BitrateLadderStep[]): string[] {
 export function generateInput(
   rtmpPort: number,
   streamKey: string,
-  inputUrl?: string
+  inputUrl?: string,
+  subtitles: SubtitleTrack[] = []
 ): string[] {
-  if (inputUrl) {
-    // Caller-mode input: ffmpeg dials the given source (e.g. an srt:// URL in
-    // caller mode) and pulls the feed. Any protocol knobs (latency, passphrase,
-    // streamid, connect timeout, ...) travel as query parameters on the URL and
-    // are parsed by ffmpeg itself, so no option strings are hardcoded here.
-    return ['-y', '-loglevel', 'error', '-i', inputUrl];
+  // Primary A/V input: either an RTMP listener or, in caller mode, ffmpeg dials
+  // the given source (e.g. an srt:// URL). Any protocol knobs (latency,
+  // passphrase, streamid, connect timeout, ...) travel as query parameters on
+  // the URL and are parsed by ffmpeg itself, so no option strings are hardcoded.
+  const args = inputUrl
+    ? ['-y', '-loglevel', 'error', '-i', inputUrl]
+    : [
+        '-y',
+        '-loglevel',
+        'error',
+        '-listen',
+        '1',
+        '-i',
+        `rtmp://0.0.0.0:${rtmpPort}/live/${streamKey}`
+      ];
+  // Each sidecar WebVTT source is an extra input after the primary A/V input,
+  // in both listener and caller mode, so the subtitle stream is always input
+  // index 1 (matched by generateOutput's -map). -rw_timeout bounds a stalled
+  // or unreachable subtitle server so it cannot hang the encode indefinitely.
+  for (const subtitle of subtitles) {
+    args.push('-rw_timeout', `${SUBTITLE_RW_TIMEOUT_US}`, '-i', subtitle.url);
   }
-  return [
-    '-y',
-    '-loglevel',
-    'error',
-    '-listen',
-    '1',
-    '-i',
-    `rtmp://0.0.0.0:${rtmpPort}/live/${streamKey}`
-  ];
+  return args;
 }
 export function generateOutput(
   hlsOnly: boolean,
   ladder: BitrateLadderStep[],
-  mediaDir: string
+  mediaDir: string,
+  subtitles: SubtitleTrack[] = []
 ): string[] {
   if (hlsOnly) {
     let varStreamMap = '';
     const videos = ladder.filter((step) => step.mediaType === 'video');
     for (let i = 0; i < videos.length; i++) {
       varStreamMap += `v:${i},a:${i}`;
+      // Attach the subtitle streams to the last video variant only. ffmpeg's
+      // hls muxer crashes if a subtitle group is referenced from more than one
+      // variant, so the reference is broadened to every variant afterwards in
+      // rewriteMasterPlaylist.
+      if (subtitles.length > 0 && i === videos.length - 1) {
+        for (let s = 0; s < subtitles.length; s++) {
+          varStreamMap += `,s:${s}`;
+        }
+        varStreamMap += `,sgroup:${SUBTITLE_GROUP_ID}`;
+      }
       if (i < videos.length - 1) {
         varStreamMap += ' ';
       }
     }
-    return [
+    const subtitleArgs: string[] = [];
+    for (let s = 0; s < subtitles.length; s++) {
+      // Subtitle sidecar inputs follow the primary input, so subtitle s is
+      // ffmpeg input index s + 1.
+      subtitleArgs.push('-map', `${s + 1}:0`);
+    }
+    if (subtitles.length > 0) {
+      subtitleArgs.push('-c:s', 'webvtt');
+    }
+    return subtitleArgs.concat([
       '-f',
       'hls',
       '-hls_time',
@@ -502,7 +629,99 @@ export function generateOutput(
       '-var_stream_map',
       varStreamMap,
       `${mediaDir}/hls/media_%v.m3u8`
-    ];
+    ]);
   }
   return [];
+}
+
+function isSubtitleMediaLine(line: string): boolean {
+  return line.startsWith('#EXT-X-MEDIA:') && line.includes('TYPE=SUBTITLES');
+}
+
+function isStreamInfLine(line: string): boolean {
+  return line.startsWith('#EXT-X-STREAM-INF:');
+}
+
+// A master is safe to finalize once ffmpeg has written the subtitle rendition
+// entry AND every expected variant stream. This uses the same line predicates
+// as rewriteMasterPlaylist so the readiness gate and the rewrite agree on what
+// a finished master looks like, and it distinguishes a not-yet-complete master
+// from one that is genuinely wrong.
+export function masterIsComplete(
+  master: string,
+  expectedVariants: number
+): boolean {
+  const lines = master.split('\n');
+  const hasSubtitleMedia = lines.some(isSubtitleMediaLine);
+  const streamInfCount = lines.filter(isStreamInfLine).length;
+  return hasSubtitleMedia && streamInfCount >= expectedVariants;
+}
+
+// Reads the master ffmpeg wrote, and if it is complete, rewrites it in place so
+// every variant references the subtitle group. The write is atomic (temp file +
+// rename) so readers never see a truncated master. Returns false, leaving the
+// file untouched, when the master is not yet complete so the caller can retry.
+export async function finalizeSubtitleMasterFile(
+  masterPath: string,
+  subtitles: SubtitleTrack[],
+  expectedVariants: number
+): Promise<boolean> {
+  const content = await readFile(masterPath, 'utf-8');
+  if (!masterIsComplete(content, expectedVariants)) {
+    return false;
+  }
+  const rewritten = rewriteMasterPlaylist(
+    content,
+    subtitles,
+    SUBTITLE_GROUP_ID
+  );
+  const tmp = `${masterPath}.tmp`;
+  await writeFile(tmp, rewritten);
+  await rename(tmp, masterPath);
+  return true;
+}
+
+// ffmpeg (6.1.x hls muxer) only advertises the subtitle group on the single
+// variant that physically carries the subtitle stream, and segfaults if any
+// other variant references the group directly. This rewrites the master
+// playlist ffmpeg produced so that every variant references the subtitle group
+// and each rendition carries the configured language, name and default flag.
+export function rewriteMasterPlaylist(
+  master: string,
+  subtitles: SubtitleTrack[],
+  groupId: string
+): string {
+  if (subtitles.length === 0) {
+    return master;
+  }
+  let mediaIndex = 0;
+  return master
+    .split('\n')
+    .map((line) => {
+      if (isSubtitleMediaLine(line)) {
+        const uriMatch = /URI="([^"]*)"/.exec(line);
+        if (!uriMatch) {
+          // No rendition URI to point at, leave the line untouched rather than
+          // emitting an empty URI.
+          return line;
+        }
+        const group = /GROUP-ID="([^"]*)"/.exec(line)?.[1] ?? groupId;
+        const track = subtitles[Math.min(mediaIndex, subtitles.length - 1)];
+        mediaIndex++;
+        return [
+          '#EXT-X-MEDIA:TYPE=SUBTITLES',
+          `GROUP-ID="${group}"`,
+          `NAME="${track.name}"`,
+          `LANGUAGE="${track.language}"`,
+          'AUTOSELECT=YES',
+          `DEFAULT=${track.default ? 'YES' : 'NO'}`,
+          `URI="${uriMatch[1]}"`
+        ].join(',');
+      }
+      if (isStreamInfLine(line) && !line.includes('SUBTITLES=')) {
+        return `${line},SUBTITLES="${groupId}"`;
+      }
+      return line;
+    })
+    .join('\n');
 }
