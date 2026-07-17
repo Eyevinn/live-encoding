@@ -17,6 +17,7 @@ import {
   redactSecrets,
   rewriteMasterPlaylist
 } from './encoder';
+import { Log } from './utils/log';
 
 jest.mock('child_process', () => ({
   ...jest.requireActual('child_process'),
@@ -42,6 +43,21 @@ jest.mock('fs/promises', () => {
     rename: jest.fn(actual.rename)
   };
 });
+
+// The pull-push library reaches the network, so stub it out. startFetcher
+// returns a session id and the plugin yields a destination whose session id can
+// be attached, matching the shapes startPullPush consumes.
+jest.mock('@eyevinn/hls-pull-push', () => ({
+  HLSPullPush: jest.fn().mockImplementation(() => ({
+    registerPlugin: jest.fn(),
+    getLogger: jest.fn(),
+    startFetcher: jest.fn(() => 'fetcher-1'),
+    stopFetcher: jest.fn()
+  })),
+  MediaPackageOutput: jest.fn().mockImplementation(() => ({
+    createOutputDestination: jest.fn(() => ({ attachSessionId: jest.fn() }))
+  }))
+}));
 
 const mockedSpawn = spawn as unknown as jest.Mock;
 const realFsPromises = jest.requireActual('fs/promises') as typeof fsPromises;
@@ -254,6 +270,77 @@ describe('redactSecrets', () => {
     expect(redactSecrets('rtmp://0.0.0.0:1935/live/stream')).toBe(
       'rtmp://0.0.0.0:1935/live/stream'
     );
+  });
+
+  test('strips basic-auth userinfo embedded in a URL', () => {
+    expect(
+      redactSecrets(
+        'https://myuser:s3cr3t@ingest.example.com/channel/index.m3u8'
+      )
+    ).toBe('https://<redacted>@ingest.example.com/channel/index.m3u8');
+  });
+
+  test('strips both userinfo and query string on the same URL', () => {
+    expect(
+      redactSecrets(
+        'https://myuser:s3cr3t@ingest.example.com/index.m3u8?token=abc'
+      )
+    ).toBe('https://<redacted>@ingest.example.com/index.m3u8?<redacted>');
+  });
+
+  test('leaves an @ in a query string untouched', () => {
+    expect(redactSecrets('https://host/path?email=a@b.com')).toBe(
+      'https://host/path?<redacted>'
+    );
+  });
+});
+
+describe('startPullPush credential logging', () => {
+  // Debug and info output both route through console.info (see utils/log).
+  const consoleInfoSpy = jest
+    .spyOn(console, 'info')
+    .mockImplementation(() => undefined);
+
+  afterEach(() => {
+    consoleInfoSpy.mockClear();
+  });
+
+  afterAll(() => {
+    consoleInfoSpy.mockRestore();
+  });
+
+  test('never logs OUTPUT_URL basic-auth credentials and logs a credential-free destination', async () => {
+    Log().level = 'debug';
+    const outputUrl = new URL(
+      'https://myuser:s3cr3t@ingest.example.com/channel/index.m3u8'
+    );
+    const encoder = new Encoder(
+      'ffmpeg',
+      'packager',
+      1935,
+      'stream',
+      '/tmp/x',
+      {
+        hlsOnly: true,
+        outputUrl,
+        originPort: 8080
+      }
+    );
+
+    await (
+      encoder as unknown as { startPullPush(): Promise<void> }
+    ).startPullPush();
+
+    const logged = consoleInfoSpy.mock.calls
+      .map((args) => args.join(' '))
+      .join('\n');
+    // Neither the username nor the password may reach the log output.
+    expect(logged).not.toContain('s3cr3t');
+    expect(logged).not.toContain('myuser');
+    // The destination host and path are still logged so a push stays diagnosable.
+    expect(logged).toContain('ingest.example.com/channel/index.m3u8');
+
+    Log().level = 'info';
   });
 });
 

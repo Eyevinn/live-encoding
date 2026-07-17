@@ -33,13 +33,13 @@ const SUBTITLE_GROUP_ID = 'subs';
 // 'starting' forever with no output once the input source connects.
 const SUBTITLE_RW_TIMEOUT_US = 15_000_000;
 
-// Redact URL query strings (which may carry a passphrase) from any value that
-// is logged or placed into an error message.
+// Redact secrets that may appear in a value that is logged or placed into an
+// error message: basic-auth userinfo embedded in a URL (user:pass@host) and URL
+// query strings (which may carry a passphrase or a signed-URL token).
 export function redactSecrets(value: string): string {
-  return value.replace(
-    /([a-z][a-z0-9+.-]*:\/\/[^\s?]*)\?[^\s]*/gi,
-    '$1?<redacted>'
-  );
+  return value
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi, '$1<redacted>@')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s?]*)\?[^\s]*/gi, '$1?<redacted>');
 }
 
 export type BitrateLadderStep = {
@@ -423,7 +423,7 @@ export class Encoder {
         this.opts.outputUrl.pathname + this.opts.outputUrl.searchParams,
         this.opts.outputUrl.origin
       );
-      Log().debug(`${username} ${password} ${destUrl.toString()}`);
+      Log().debug(`Starting pull push to ${redactSecrets(destUrl.toString())}`);
       const plugin = new MediaPackageOutput();
       this.pullPush.registerPlugin('mediapackage', plugin);
       const outputDest = plugin.createOutputDestination(
@@ -451,7 +451,9 @@ export class Encoder {
         outputDest.attachSessionId(this.fetcherId);
         this.pullPushStarted = true;
         Log().info(
-          `Started pull push of ${source.href} to ${destUrl.toString()}`
+          `Started pull push of ${source.href} to ${redactSecrets(
+            destUrl.toString()
+          )}`
         );
       }
     }
