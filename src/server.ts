@@ -1,7 +1,7 @@
 import fastifyStatic from '@fastify/static';
 import api from './api';
 import { Encoder } from './encoder';
-import { parseSubtitles } from './config';
+import { parseFramerate, parseLadder, parseSubtitles } from './config';
 import routeEncoder from './routes/encoder';
 import routeOrigin from './routes/origin';
 import { Log } from './utils/log';
@@ -19,6 +19,8 @@ const hlsOnly = process.env.HLS_ONLY
   : true;
 
 const subtitles = parseSubtitles();
+const ladder = parseLadder();
+const framerate = parseFramerate();
 
 if (!hlsOnly && subtitles.length > 0) {
   Log().warn(
@@ -37,6 +39,8 @@ const encoderOpts = {
   inputDialTimeoutSec: process.env.INPUT_DIAL_TIMEOUT
     ? Number(process.env.INPUT_DIAL_TIMEOUT)
     : undefined,
+  ladder,
+  framerate,
   subtitles
 };
 const encoder = new Encoder(
