@@ -158,6 +158,72 @@ describe('encoder util', () => {
     ]);
   });
 
+  test('derives the GOP from a configured framerate and adds an fps filter', () => {
+    const filterComplex = generateFilterComplex(testLadder, 25);
+    // Each rung's scale filter gains an fps conversion to the configured rate.
+    expect(filterComplex[1]).toBe(
+      '[0:v]split=2[v1][v2];[v1]scale=w=1280:h=720,fps=25[v1out];[v2]scale=w=640:h=360,fps=25[v2out]'
+    );
+    // GOP and keyint_min are 2 x framerate (25 -> 50) on every video rung,
+    // preserving a ~2 s keyframe cadence, and -preset stays untouched.
+    const gArgs = filterComplex.reduce<string[]>((acc, arg, i) => {
+      if (arg === '-g' || arg === '-keyint_min') acc.push(filterComplex[i + 1]);
+      return acc;
+    }, []);
+    expect(gArgs).toEqual(['50', '50', '50', '50']);
+  });
+
+  test('keeps GOP 48 and no fps filter when framerate is unset', () => {
+    const filterComplex = generateFilterComplex(testLadder);
+    expect(filterComplex[1]).not.toContain('fps=');
+    const gArgs = filterComplex.reduce<string[]>((acc, arg, i) => {
+      if (arg === '-g' || arg === '-keyint_min') acc.push(filterComplex[i + 1]);
+      return acc;
+    }, []);
+    expect(gArgs).toEqual(['48', '48', '48', '48']);
+  });
+
+  test('the ladder drives the variant count consistently across all three use sites', () => {
+    const threeRung: BitrateLadderStep[] = [
+      {
+        mediaType: 'video',
+        bitrate: '6M',
+        video: { width: 1920, height: 1080 }
+      },
+      {
+        mediaType: 'video',
+        bitrate: '4M',
+        video: { width: 1280, height: 720 }
+      },
+      { mediaType: 'video', bitrate: '3M', video: { width: 640, height: 360 } },
+      {
+        mediaType: 'audio',
+        bitrate: '128k',
+        audio: { channels: 2, sampleRate: 48000 }
+      }
+    ];
+    // 1) generateFilterComplex splits into one branch per video rung.
+    const filter = generateFilterComplex(threeRung);
+    expect(filter[1].startsWith('[0:v]split=3')).toBe(true);
+    // 2) generateOutput maps one variant per video rung in the var_stream_map.
+    const output = generateOutput(true, threeRung, '/data');
+    const varStreamMap = output[output.indexOf('-var_stream_map') + 1];
+    expect(varStreamMap).toBe('v:0,a:0 v:1,a:1 v:2,a:2');
+    // 3) the subtitle-master readiness gate expects one variant per video rung.
+    const masterOfThree = [
+      '#EXTM3U',
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="x",URI="m.m3u8"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=1',
+      'media_0.m3u8',
+      '#EXT-X-STREAM-INF:BANDWIDTH=2',
+      'media_1.m3u8',
+      '#EXT-X-STREAM-INF:BANDWIDTH=3',
+      'media_2.m3u8'
+    ].join('\n');
+    expect(masterIsComplete(masterOfThree, 3)).toBe(true);
+    expect(masterIsComplete(masterOfThree, 4)).toBe(false);
+  });
+
   test('generates RTMP listener input args by default', () => {
     const input = generateInput(1935, 'stream');
     expect(input).toEqual([
@@ -454,6 +520,49 @@ describe('encoder SRT caller dial lifecycle', () => {
     // covers the internal wait-for-kill poll inside stop().
     await jest.advanceTimersByTimeAsync(8000);
     expect(await encoder.getStatus()).toBe('stopped');
+  });
+
+  test('wires a custom ladder and framerate through to the spawned ffmpeg args', async () => {
+    const encoder = new Encoder(
+      'ffmpeg',
+      'packager',
+      1935,
+      'stream',
+      '/media',
+      {
+        hlsOnly: true,
+        inputUrl: 'srt://source:9000',
+        ladder: [
+          {
+            mediaType: 'video',
+            bitrate: '5000k',
+            video: { width: 1920, height: 1080 }
+          },
+          {
+            mediaType: 'audio',
+            bitrate: '128k',
+            audio: { channels: 2, sampleRate: 48000 }
+          }
+        ],
+        framerate: 50
+      }
+    );
+    await encoder.start({});
+
+    const ffmpegArgs = mockedSpawn.mock.calls[0][1] as string[];
+    const filterComplex = ffmpegArgs[ffmpegArgs.indexOf('-filter_complex') + 1];
+    // Single video rung, scaled to 1920x1080 and converted to 50 fps.
+    expect(filterComplex).toBe(
+      '[0:v]split=1[v1];[v1]scale=w=1920:h=1080,fps=50[v1out]'
+    );
+    // GOP derived as 2 x 50 = 100 on the rung.
+    expect(ffmpegArgs[ffmpegArgs.indexOf('-g') + 1]).toBe('100');
+    // Custom bitrate reaches the output.
+    expect(ffmpegArgs).toContain('5000k');
+    // One video variant in the var_stream_map.
+    expect(ffmpegArgs[ffmpegArgs.indexOf('-var_stream_map') + 1]).toBe(
+      'v:0,a:0'
+    );
   });
 
   test('redacts secrets in ffmpeg stderr output', async () => {
