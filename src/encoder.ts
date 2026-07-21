@@ -55,7 +55,16 @@ export type BitrateLadderStep = {
   };
 };
 
-const DEFAULT_LADDER: BitrateLadderStep[] = [
+// Default keyframe interval (frames) used when no FRAMERATE is configured. The
+// input framerate is unknown at this point, so a fixed GOP is emitted and the
+// output follows the input framerate, exactly as before FRAMERATE existed.
+export const DEFAULT_GOP = 48;
+
+// Default ABR ladder used when the LADDER env var is unset: two video rungs plus
+// a single stereo AAC audio rung. Exported so the env parser can reuse the audio
+// rung when building a custom ladder, keeping one source of truth for the audio
+// defaults.
+export const DEFAULT_LADDER: BitrateLadderStep[] = [
   {
     mediaType: 'video',
     bitrate: '4M',
@@ -96,6 +105,13 @@ export type EncoderOpts = {
   inputDialTimeoutSec?: number;
   // Optional sidecar WebVTT subtitle tracks passed through into the HLS output.
   subtitles?: SubtitleTrack[];
+  // Optional ABR ladder overriding DEFAULT_LADDER. When unset the default ladder
+  // is used, so the output is byte-identical to the previous behaviour.
+  ladder?: BitrateLadderStep[];
+  // Optional output framerate. When set, each rung is converted to this fps and
+  // the GOP is derived as 2 x framerate (keeping a ~2 s keyframe cadence). When
+  // unset the output follows the input framerate and the GOP stays DEFAULT_GOP.
+  framerate?: number;
 };
 
 type Process = {
@@ -156,7 +172,11 @@ export class Encoder {
     startRequest: EncoderStartRequest
   ): Promise<EncoderStartResponse> {
     const subtitles = this.opts.subtitles ?? [];
-    const filterComplexArgs = generateFilterComplex(DEFAULT_LADDER);
+    const ladder = this.opts.ladder ?? DEFAULT_LADDER;
+    const filterComplexArgs = generateFilterComplex(
+      ladder,
+      this.opts.framerate
+    );
     const inputArgs = generateInput(
       this.rtmpPort,
       this.streamKey,
@@ -165,7 +185,7 @@ export class Encoder {
     );
     const outputArgs = generateOutput(
       this.opts.hlsOnly,
-      DEFAULT_LADDER,
+      ladder,
       this.mediaDir,
       subtitles
     );
@@ -236,7 +256,7 @@ export class Encoder {
             // in 'starting' and is retried on the next tick.
             const subtitlesReady =
               subtitles.length === 0 ||
-              (await this.finalizeSubtitleMaster(DEFAULT_LADDER));
+              (await this.finalizeSubtitleMaster(ladder));
             if (subtitlesReady && this.status != 'running') {
               Log().debug(
                 'We have HLS index file available, change status to running'
@@ -481,10 +501,21 @@ export class Encoder {
   }
 }
 
-export function generateFilterComplex(ladder: BitrateLadderStep[]): string[] {
+export function generateFilterComplex(
+  ladder: BitrateLadderStep[],
+  framerate?: number
+): string[] {
   const videos = ladder.filter(
     (step) => step.mediaType === 'video' && step.video
   );
+  // With a configured framerate each rung is converted to it and the GOP is
+  // derived as 2 x framerate, keeping a ~2 s keyframe cadence (e.g. 25 -> 50,
+  // 30 -> 60) so segment boundaries stay keyframe-aligned. Unset keeps the
+  // input framerate and the fixed default GOP.
+  const gop = (
+    framerate && framerate > 0 ? framerate * 2 : DEFAULT_GOP
+  ).toString();
+  const fpsFilter = framerate && framerate > 0 ? `,fps=${framerate}` : '';
   let filterComplexString = `[0:v]split=${videos.length}`;
   for (let i = 0; i < videos.length; i++) {
     filterComplexString += `[v${i + 1}]`;
@@ -493,7 +524,7 @@ export function generateFilterComplex(ladder: BitrateLadderStep[]): string[] {
   for (let i = 0; i < videos.length; i++) {
     filterComplexString += `[v${i + 1}]scale=w=${videos[i].video?.width}:h=${
       videos[i].video?.height
-    }[v${i + 1}out]`;
+    }${fpsFilter}[v${i + 1}out]`;
     if (i < videos.length - 1) {
       filterComplexString += ';';
     }
@@ -520,11 +551,11 @@ export function generateFilterComplex(ladder: BitrateLadderStep[]): string[] {
       '-preset',
       'ultrafast',
       '-g',
-      '48',
+      gop,
       '-sc_threshold',
       '0',
       '-keyint_min',
-      '48'
+      gop
     ];
     videoMaps.push(videoMap);
     if (audio) {
