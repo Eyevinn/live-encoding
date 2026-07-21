@@ -40,20 +40,22 @@ Live transcoding to HLS and optionally MPEG-DASH. Provides origin for CDN shield
 
 ### Environment Variables
 
-| Variable             | Description                                                                                                                                                           | Default value                |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `PORT`               | API port to bind and listen to                                                                                                                                        | `8000`                       |
-| `ORIGIN_DIR`         | Location on disk where to write media segments and playlists                                                                                                          | `/tmp/media`                 |
-| `HLS_ONLY`           | Only output HLS + TS                                                                                                                                                  | `true`                       |
-| `RTMP_PORT`          | RTMP port to bind and listen to                                                                                                                                       | `1935`                       |
-| `STREAM_KEY`         | RTMP streamkey                                                                                                                                                        | `stream`                     |
-| `INPUT_URL`          | Optional `srt://` input URL. If set, the encoder dials this source in caller mode instead of listening for an RTMP publisher. If not set the RTMP listener is used    |                              |
-| `INPUT_DIAL_TIMEOUT` | Caller-mode dial deadline in seconds. If the source is never reached within this bound the encoder gives up and goes to `error`. A per-request `timeout` overrides it | `300`                        |
-| `OUTPUT_URL`         | URL to upload media segments and playlists. If not set push to CDN is disabled                                                                                        |                              |
-| `SUBTITLE_URL`       | Sidecar WebVTT source URL fetched alongside the A/V input. If not set the output stays video+audio only                                                               |                              |
-| `SUBTITLE_LANGUAGE`  | BCP-47 language tag for the subtitle rendition, e.g. `en`                                                                                                             | `und`                        |
-| `SUBTITLE_NAME`      | Display name for the subtitle rendition, e.g. `English`                                                                                                               | value of `SUBTITLE_LANGUAGE` |
-| `SUBTITLE_DEFAULT`   | Whether the subtitle rendition is the default (`true`/`1`)                                                                                                            | `false`                      |
+| Variable             | Description                                                                                                                                                                                                                | Default value                |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `PORT`               | API port to bind and listen to                                                                                                                                                                                             | `8000`                       |
+| `ORIGIN_DIR`         | Location on disk where to write media segments and playlists                                                                                                                                                               | `/tmp/media`                 |
+| `HLS_ONLY`           | Only output HLS + TS                                                                                                                                                                                                       | `true`                       |
+| `RTMP_PORT`          | RTMP port to bind and listen to                                                                                                                                                                                            | `1935`                       |
+| `STREAM_KEY`         | RTMP streamkey                                                                                                                                                                                                             | `stream`                     |
+| `INPUT_URL`          | Optional `srt://` input URL. If set, the encoder dials this source in caller mode instead of listening for an RTMP publisher. If not set the RTMP listener is used                                                         |                              |
+| `INPUT_DIAL_TIMEOUT` | Caller-mode dial deadline in seconds. If the source is never reached within this bound the encoder gives up and goes to `error`. A per-request `timeout` overrides it                                                      | `300`                        |
+| `OUTPUT_URL`         | URL to upload media segments and playlists. If not set push to CDN is disabled                                                                                                                                             |                              |
+| `LADDER`             | ABR ladder as a comma-separated list of video rungs, each `<width>x<height>:<bitrate>`, e.g. `1920x1080:5000k,1280x720:2800k,640x360:800k`. An invalid value fails startup. If not set the built-in default ladder is used | `1280x720:4M,640x360:3M`     |
+| `FRAMERATE`          | Output framerate as a positive integer (typically `25`, `30`, `50` or `60`). Each rung is converted to this rate and the GOP is set to 2 x framerate. If not set the output follows the input framerate                    | input framerate              |
+| `SUBTITLE_URL`       | Sidecar WebVTT source URL fetched alongside the A/V input. If not set the output stays video+audio only                                                                                                                    |                              |
+| `SUBTITLE_LANGUAGE`  | BCP-47 language tag for the subtitle rendition, e.g. `en`                                                                                                                                                                  | `und`                        |
+| `SUBTITLE_NAME`      | Display name for the subtitle rendition, e.g. `English`                                                                                                                                                                    | value of `SUBTITLE_LANGUAGE` |
+| `SUBTITLE_DEFAULT`   | Whether the subtitle rendition is the default (`true`/`1`)                                                                                                                                                                 | `false`                      |
 
 ### Subtitles
 
@@ -67,6 +69,31 @@ When `SUBTITLE_URL` is set to an `http(s)` WebVTT source, the encoder fetches it
   SUBTITLE_DEFAULT=true \
   npm start
 ```
+
+### ABR ladder and framerate
+
+The ABR ladder and the output framerate are configurable through the environment. Both are optional: with neither set the encoder emits its built-in default ladder at the input framerate, exactly as before.
+
+Set `LADDER` to a comma-separated list of video rungs, each `<width>x<height>:<bitrate>`:
+
+```
+% ORIGIN_DIR=/data \
+  LADDER='1920x1080:5000k,1280x720:2800k,640x360:800k' \
+  npm start
+```
+
+The bitrate of each rung is passed to ffmpeg verbatim, so an integer with an optional `k`/`M`/`G` suffix is accepted (`5000k`, `5M`, `5000000`). An invalid `LADDER` value fails startup with an error naming the offending entry: the encoder never silently falls back to the default ladder, because an operator who set `LADDER` expects that exact ladder and a quietly-different stream is harder to diagnose than a startup crash. Audio is not configurable through `LADDER` today; the default stereo AAC rung is always appended.
+
+Set `FRAMERATE` to a positive integer to convert every rung to that framerate:
+
+```
+% ORIGIN_DIR=/data \
+  LADDER='1280x720:2800k,640x360:800k' \
+  FRAMERATE=50 \
+  npm start
+```
+
+With `FRAMERATE` set, the keyframe interval (GOP) is derived as 2 x framerate so segments stay keyframe-aligned at a ~2 s cadence. With `FRAMERATE` unset the output follows the input framerate and the GOP stays at the fixed default of 48, so setting `LADDER` alone does not change the framerate or GOP.
 
 ### CDN Pull
 
