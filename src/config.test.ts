@@ -1,7 +1,10 @@
 import {
   boolFromEnv,
+  parseBufsizeFactor,
   parseFramerate,
   parseLadder,
+  parseMaxrateFactor,
+  parseRateControl,
   parseSubtitles
 } from './config';
 
@@ -178,6 +181,52 @@ describe('parseFramerate', () => {
   test('fails fast on a non-numeric value', () => {
     expect(() => parseFramerate({ FRAMERATE: 'fast' })).toThrow(
       /Invalid FRAMERATE 'fast'/
+    );
+  });
+});
+
+describe('parseRateControl', () => {
+  test('defaults to cbr when unset', () => {
+    expect(parseRateControl({})).toBe('cbr');
+  });
+
+  test('parses both valid modes, case- and whitespace-insensitive', () => {
+    expect(parseRateControl({ RATE_CONTROL: 'cbr' })).toBe('cbr');
+    expect(parseRateControl({ RATE_CONTROL: 'capped-vbr' })).toBe('capped-vbr');
+    expect(parseRateControl({ RATE_CONTROL: ' CBR ' })).toBe('cbr');
+    expect(parseRateControl({ RATE_CONTROL: 'Capped-VBR' })).toBe('capped-vbr');
+  });
+
+  test('fails fast naming an unrecognised value', () => {
+    expect(() => parseRateControl({ RATE_CONTROL: 'vbr' })).toThrow(
+      /Invalid RATE_CONTROL 'vbr'/
+    );
+  });
+});
+
+describe('parseMaxrateFactor / parseBufsizeFactor', () => {
+  test('return the documented defaults when unset', () => {
+    expect(parseMaxrateFactor({})).toBe(1.15);
+    expect(parseBufsizeFactor({})).toBe(2.0);
+  });
+
+  test('parse a positive float override', () => {
+    expect(parseMaxrateFactor({ MAXRATE_FACTOR: '1.3' })).toBe(1.3);
+    expect(parseBufsizeFactor({ BUFSIZE_FACTOR: '1.5' })).toBe(1.5);
+  });
+
+  test('fail fast on a non-positive value naming the variable', () => {
+    expect(() => parseMaxrateFactor({ MAXRATE_FACTOR: '0' })).toThrow(
+      /Invalid MAXRATE_FACTOR '0': must be a positive number/
+    );
+    expect(() => parseBufsizeFactor({ BUFSIZE_FACTOR: '-2' })).toThrow(
+      /Invalid BUFSIZE_FACTOR '-2': must be a positive number/
+    );
+  });
+
+  test('fail fast on a non-numeric value', () => {
+    expect(() => parseMaxrateFactor({ MAXRATE_FACTOR: 'high' })).toThrow(
+      /Invalid MAXRATE_FACTOR 'high'/
     );
   });
 });
