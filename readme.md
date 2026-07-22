@@ -52,6 +52,9 @@ Live transcoding to HLS and optionally MPEG-DASH. Provides origin for CDN shield
 | `OUTPUT_URL`         | URL to upload media segments and playlists. If not set push to CDN is disabled                                                                                                                                             |                              |
 | `LADDER`             | ABR ladder as a comma-separated list of video rungs, each `<width>x<height>:<bitrate>`, e.g. `1920x1080:5000k,1280x720:2800k,640x360:800k`. An invalid value fails startup. If not set the built-in default ladder is used | `1280x720:4M,640x360:3M`     |
 | `FRAMERATE`          | Output framerate as a positive integer (typically `25`, `30`, `50` or `60`). Each rung is converted to this rate and the GOP is set to 2 x framerate. If not set the output follows the input framerate                    | input framerate              |
+| `RATE_CONTROL`       | Per-rung H.264 rate-control mode: `cbr` (strict constant bitrate) or `capped-vbr` (VBV-capped variable bitrate). An invalid value fails startup                                                                            | `cbr`                        |
+| `MAXRATE_FACTOR`     | Positive float. Under `capped-vbr` the per-rung `-maxrate` is `round(MAXRATE_FACTOR x target bitrate)`. Ignored under `cbr`                                                                                                | `1.15`                       |
+| `BUFSIZE_FACTOR`     | Positive float. Under `capped-vbr` the per-rung `-bufsize` is `round(BUFSIZE_FACTOR x maxrate)`. Ignored under `cbr`                                                                                                       | `2.0`                        |
 | `SUBTITLE_URL`       | Sidecar WebVTT source URL fetched alongside the A/V input. If not set the output stays video+audio only                                                                                                                    |                              |
 | `SUBTITLE_LANGUAGE`  | BCP-47 language tag for the subtitle rendition, e.g. `en`                                                                                                                                                                  | `und`                        |
 | `SUBTITLE_NAME`      | Display name for the subtitle rendition, e.g. `English`                                                                                                                                                                    | value of `SUBTITLE_LANGUAGE` |
@@ -94,6 +97,26 @@ Set `FRAMERATE` to a positive integer to convert every rung to that framerate:
 ```
 
 With `FRAMERATE` set, the keyframe interval (GOP) is derived as 2 x framerate so segments stay keyframe-aligned at a ~2 s cadence. With `FRAMERATE` unset the output follows the input framerate and the GOP stays at the fixed default of 48, so setting `LADDER` alone does not change the framerate or GOP.
+
+### Rate control
+
+`RATE_CONTROL` selects the per-rung H.264 rate-control mode. The default is `cbr`, which keeps the historical strict constant-bitrate encode: `-b:v`, `-maxrate`, `-minrate` and `-bufsize` are all set to the rung's target bitrate and the x264 `nal-hrd=cbr` HRD model is enabled.
+
+Set `RATE_CONTROL=capped-vbr` for a VBV-capped variable bitrate instead. Each rung keeps its `LADDER` bitrate as the average target, but the peak is capped at `-maxrate` with a VBV buffer of `-bufsize`, `-minrate` is dropped and the `nal-hrd=cbr` param is removed (`force-cfr=1` is kept so the output frame rate stays constant). This lets simpler scenes spend fewer bits while still bounding the peak for ABR delivery.
+
+```
+% ORIGIN_DIR=/data \
+  LADDER='1920x1080:5000k,1280x720:2800k,640x360:800k' \
+  RATE_CONTROL=capped-vbr \
+  npm start
+```
+
+The peak and buffer are derived from two documented constants, overridable per deployment:
+
+- `-maxrate` = `round(MAXRATE_FACTOR x target)`, `MAXRATE_FACTOR` defaulting to `1.15` (15% peak headroom over the target)
+- `-bufsize` = `round(BUFSIZE_FACTOR x maxrate)`, `BUFSIZE_FACTOR` defaulting to `2.0`
+
+Both factors are positive floats and are only consulted under `capped-vbr`; they are ignored under `cbr`. An invalid `RATE_CONTROL`, `MAXRATE_FACTOR` or `BUFSIZE_FACTOR` value fails startup with an error naming the offending value, rather than silently falling back, for the same reason as `LADDER` and `FRAMERATE`.
 
 ### CDN Pull
 

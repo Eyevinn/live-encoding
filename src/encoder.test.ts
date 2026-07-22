@@ -9,6 +9,7 @@ import {
   DEFAULT_INPUT_DIAL_TIMEOUT_SEC,
   Encoder,
   SubtitleTrack,
+  bitrateToBps,
   finalizeSubtitleMasterFile,
   generateFilterComplex,
   generateInput,
@@ -275,6 +276,113 @@ describe('encoder util', () => {
       'v:0,a:0 v:1,a:1',
       '/data/hls/media_%v.m3u8'
     ]);
+  });
+});
+
+describe('bitrateToBps', () => {
+  test('applies SI suffix multipliers', () => {
+    expect(bitrateToBps('6M')).toBe(6_000_000);
+    expect(bitrateToBps('2800k')).toBe(2_800_000);
+    expect(bitrateToBps('800000')).toBe(800_000);
+    expect(bitrateToBps('1.5M')).toBe(1_500_000);
+    expect(bitrateToBps('1G')).toBe(1_000_000_000);
+  });
+});
+
+describe('generateFilterComplex rate control', () => {
+  // Extract the ffmpeg args for a single video rung: everything from its
+  // -c:v:<index> flag up to (but excluding) the -preset that always follows.
+  const rungArgs = (args: string[], index: number): string[] => {
+    const start = args.indexOf(`-c:v:${index}`);
+    const preset = args.indexOf('-preset', start);
+    return args.slice(start, preset);
+  };
+
+  test('cbr mode is byte-identical to the unset default', () => {
+    const unset = generateFilterComplex(testLadder);
+    const explicitCbr = generateFilterComplex(testLadder, undefined, {
+      mode: 'cbr',
+      maxrateFactor: 1.15,
+      bufsizeFactor: 2.0
+    });
+    // The factors are ignored under cbr, so the args match the historical set.
+    expect(explicitCbr).toEqual(unset);
+  });
+
+  test('capped-vbr emits VBV-capped per-rung params with the default factors', () => {
+    const args = generateFilterComplex(testLadder, undefined, {
+      mode: 'capped-vbr',
+      maxrateFactor: 1.15,
+      bufsizeFactor: 2.0
+    });
+    // Rung 0: 6M target -> maxrate round(1.15 x 6e6)=6900000, bufsize 2 x that.
+    expect(rungArgs(args, 0)).toEqual([
+      '-c:v:0',
+      'libx264',
+      '-x264-params',
+      'force-cfr=1',
+      '-b:v:0',
+      '6M',
+      '-maxrate:v:0',
+      '6900000',
+      '-bufsize:v:0',
+      '13800000'
+    ]);
+    // Rung 1: 3M target -> maxrate 3450000, bufsize 6900000.
+    expect(rungArgs(args, 1)).toEqual([
+      '-c:v:1',
+      'libx264',
+      '-x264-params',
+      'force-cfr=1',
+      '-b:v:1',
+      '3M',
+      '-maxrate:v:1',
+      '3450000',
+      '-bufsize:v:1',
+      '6900000'
+    ]);
+    // No minrate anywhere and the CBR HRD model is dropped.
+    expect(args).not.toContain('-minrate:v:0');
+    expect(args).not.toContain('-minrate:v:1');
+    expect(args).not.toContain('nal-hrd=cbr:force-cfr=1');
+  });
+
+  test('capped-vbr honours factor overrides', () => {
+    const args = generateFilterComplex(testLadder, undefined, {
+      mode: 'capped-vbr',
+      maxrateFactor: 1.5,
+      bufsizeFactor: 1.0
+    });
+    // Rung 0: maxrate round(1.5 x 6e6)=9000000, bufsize 1.0 x that.
+    expect(rungArgs(args, 0)).toEqual([
+      '-c:v:0',
+      'libx264',
+      '-x264-params',
+      'force-cfr=1',
+      '-b:v:0',
+      '6M',
+      '-maxrate:v:0',
+      '9000000',
+      '-bufsize:v:0',
+      '9000000'
+    ]);
+  });
+
+  test('capped-vbr composes with a configured framerate', () => {
+    const args = generateFilterComplex(testLadder, 25, {
+      mode: 'capped-vbr',
+      maxrateFactor: 1.15,
+      bufsizeFactor: 2.0
+    });
+    // Rate-control switch does not disturb the fps filter or the 2 x framerate GOP.
+    expect(args[1]).toContain('fps=25');
+    const gArgs = args.reduce<string[]>((acc, arg, i) => {
+      if (arg === '-g' || arg === '-keyint_min') acc.push(args[i + 1]);
+      return acc;
+    }, []);
+    expect(gArgs).toEqual(['50', '50', '50', '50']);
+    expect(args).toContain('-maxrate:v:0');
+    expect(args).not.toContain('-minrate:v:0');
   });
 });
 
