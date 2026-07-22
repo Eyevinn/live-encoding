@@ -82,6 +82,34 @@ export const DEFAULT_LADDER: BitrateLadderStep[] = [
   }
 ];
 
+// Per-rung rate-control mode for the H.264 video encode.
+//   cbr        strict constant bitrate: maxrate = minrate = target and the
+//              x264 nal-hrd=cbr HRD model is enabled. This is the default and
+//              matches the historical behaviour byte-for-byte.
+//   capped-vbr constrained VBR: the target is a floor-free average, the peak is
+//              capped at maxrate (a headroom multiple of the target) with a VBV
+//              buffer of bufsize, and no minrate. Lets simple scenes spend fewer
+//              bits while bounding the peak for ABR delivery.
+export type RateControlMode = 'cbr' | 'capped-vbr';
+
+// Default multiplier applied to a rung's target bitrate to derive -maxrate under
+// capped-VBR. 1.15 gives 15% peak headroom over the target, a common capped-VBR
+// choice that lets complex scenes spend bits without an unbounded peak.
+export const DEFAULT_MAXRATE_FACTOR = 1.15;
+
+// Default multiplier applied to -maxrate to derive -bufsize under capped-VBR.
+// 2.0 sizes the VBV buffer at twice the peak rate, a standard starting point
+// that smooths rate fluctuations without adding meaningful latency.
+export const DEFAULT_BUFSIZE_FACTOR = 2.0;
+
+// Resolved rate-control configuration passed to generateFilterComplex. The
+// factors are only consulted under capped-VBR; under cbr they are ignored.
+export type RateControlOpts = {
+  mode: RateControlMode;
+  maxrateFactor: number;
+  bufsizeFactor: number;
+};
+
 export type SubtitleTrack = {
   // Sidecar WebVTT source URL, fetched alongside the A/V input.
   url: string;
@@ -112,6 +140,9 @@ export type EncoderOpts = {
   // the GOP is derived as 2 x framerate (keeping a ~2 s keyframe cadence). When
   // unset the output follows the input framerate and the GOP stays DEFAULT_GOP.
   framerate?: number;
+  // Optional per-rung rate-control configuration. When unset (or mode 'cbr')
+  // the video encode is strict CBR, byte-identical to the previous behaviour.
+  rateControl?: RateControlOpts;
 };
 
 type Process = {
@@ -175,7 +206,8 @@ export class Encoder {
     const ladder = this.opts.ladder ?? DEFAULT_LADDER;
     const filterComplexArgs = generateFilterComplex(
       ladder,
-      this.opts.framerate
+      this.opts.framerate,
+      this.opts.rateControl
     );
     const inputArgs = generateInput(
       this.rtmpPort,
@@ -501,9 +533,69 @@ export class Encoder {
   }
 }
 
+// Convert a ladder bitrate string (an integer with an optional k/M/G suffix, as
+// validated by parseLadder and used in DEFAULT_LADDER) to bits per second. The
+// suffixes are SI (k=1e3, M=1e6, G=1e9), matching ffmpeg's own interpretation of
+// a suffixed rate. Used to derive the capped-VBR maxrate/bufsize from the target.
+export function bitrateToBps(bitrate: string): number {
+  const match = /^(\d+(?:\.\d+)?)([kKmMgG]?)$/.exec(bitrate);
+  if (!match) {
+    throw new Error(
+      `Cannot parse bitrate '${bitrate}': expected a number with an ` +
+        'optional k/M/G suffix, e.g. 2800k'
+    );
+  }
+  const value = Number(match[1]);
+  const suffix = match[2].toLowerCase();
+  const multiplier =
+    suffix === 'k' ? 1e3 : suffix === 'm' ? 1e6 : suffix === 'g' ? 1e9 : 1;
+  return value * multiplier;
+}
+
+// Build the per-rung rate-control ffmpeg arguments for video variant `index`.
+// Under cbr (or no config) this is the historical strict-CBR set with the
+// nal-hrd=cbr HRD model and maxrate=minrate=bufsize=target. Under capped-VBR the
+// target is a VBV-capped average: maxrate = round(maxrateFactor x target),
+// bufsize = round(bufsizeFactor x maxrate), no minrate, and nal-hrd=cbr dropped
+// (force-cfr=1 stays so the output keeps a constant frame rate).
+function rateControlArgs(
+  index: number,
+  targetBitrate: string,
+  rateControl?: RateControlOpts
+): string[] {
+  if (!rateControl || rateControl.mode === 'cbr') {
+    return [
+      '-x264-params',
+      'nal-hrd=cbr:force-cfr=1',
+      `-b:v:${index}`,
+      targetBitrate,
+      `-maxrate:v:${index}`,
+      targetBitrate,
+      `-minrate:v:${index}`,
+      targetBitrate,
+      `-bufsize:v:${index}`,
+      targetBitrate
+    ];
+  }
+  const targetBps = bitrateToBps(targetBitrate);
+  const maxrate = Math.round(targetBps * rateControl.maxrateFactor);
+  const bufsize = Math.round(maxrate * rateControl.bufsizeFactor);
+  return [
+    '-x264-params',
+    'force-cfr=1',
+    `-b:v:${index}`,
+    targetBitrate,
+    `-maxrate:v:${index}`,
+    `${maxrate}`,
+    `-bufsize:v:${index}`,
+    `${bufsize}`
+  ];
+}
+
 export function generateFilterComplex(
   ladder: BitrateLadderStep[],
-  framerate?: number
+  framerate?: number,
+  rateControl?: RateControlOpts
 ): string[] {
   const videos = ladder.filter(
     (step) => step.mediaType === 'video' && step.video
@@ -538,16 +630,7 @@ export function generateFilterComplex(
       `[v${i + 1}out]`,
       `-c:v:${i}`,
       'libx264',
-      '-x264-params',
-      'nal-hrd=cbr:force-cfr=1',
-      `-b:v:${i}`,
-      videos[i].bitrate,
-      `-maxrate:v:${i}`,
-      videos[i].bitrate,
-      `-minrate:v:${i}`,
-      videos[i].bitrate,
-      `-bufsize:v:${i}`,
-      videos[i].bitrate,
+      ...rateControlArgs(i, videos[i].bitrate, rateControl),
       '-preset',
       'ultrafast',
       '-g',

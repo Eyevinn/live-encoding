@@ -1,4 +1,11 @@
-import { BitrateLadderStep, DEFAULT_LADDER, SubtitleTrack } from './encoder';
+import {
+  BitrateLadderStep,
+  DEFAULT_BUFSIZE_FACTOR,
+  DEFAULT_LADDER,
+  DEFAULT_MAXRATE_FACTOR,
+  RateControlMode,
+  SubtitleTrack
+} from './encoder';
 
 export function boolFromEnv(value: string | undefined): boolean {
   return value ? value.toLowerCase() === 'true' || value === '1' : false;
@@ -119,4 +126,66 @@ export function parseSubtitles(
       default: boolFromEnv(env.SUBTITLE_DEFAULT)
     }
   ];
+}
+
+// Parse the per-rung rate-control mode from the RATE_CONTROL env var. 'cbr'
+// (the default when unset) keeps the historical strict-CBR encode byte for
+// byte; 'capped-vbr' switches to a VBV-capped variable bitrate. An unrecognised
+// value FAILS FAST naming the offending value rather than silently defaulting,
+// for the same reason as parseLadder and parseFramerate.
+export function parseRateControl(
+  env: Record<string, string | undefined> = process.env
+): RateControlMode {
+  const raw = env.RATE_CONTROL;
+  if (raw === undefined) {
+    return 'cbr';
+  }
+  const value = raw.trim().toLowerCase();
+  if (value === 'cbr' || value === 'capped-vbr') {
+    return value;
+  }
+  throw new Error(
+    `Invalid RATE_CONTROL '${raw}': must be 'cbr' or 'capped-vbr'`
+  );
+}
+
+// Parse a positive-float rate-control factor from the environment, returning the
+// supplied default when unset. A non-numeric or non-positive value FAILS FAST
+// naming the variable and the offending value. These factors are only consulted
+// under capped-VBR; under cbr they are ignored.
+function parsePositiveFloatFactor(
+  raw: string | undefined,
+  name: string,
+  fallback: number
+): number {
+  if (raw === undefined) {
+    return fallback;
+  }
+  const value = Number(raw.trim());
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`Invalid ${name} '${raw}': must be a positive number`);
+  }
+  return value;
+}
+
+// -maxrate multiple of a rung's target bitrate under capped-VBR (default 1.15).
+export function parseMaxrateFactor(
+  env: Record<string, string | undefined> = process.env
+): number {
+  return parsePositiveFloatFactor(
+    env.MAXRATE_FACTOR,
+    'MAXRATE_FACTOR',
+    DEFAULT_MAXRATE_FACTOR
+  );
+}
+
+// -bufsize multiple of the computed maxrate under capped-VBR (default 2.0).
+export function parseBufsizeFactor(
+  env: Record<string, string | undefined> = process.env
+): number {
+  return parsePositiveFloatFactor(
+    env.BUFSIZE_FACTOR,
+    'BUFSIZE_FACTOR',
+    DEFAULT_BUFSIZE_FACTOR
+  );
 }

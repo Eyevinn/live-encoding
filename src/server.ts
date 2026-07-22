@@ -1,7 +1,14 @@
 import fastifyStatic from '@fastify/static';
 import api from './api';
 import { Encoder } from './encoder';
-import { parseFramerate, parseLadder, parseSubtitles } from './config';
+import {
+  parseBufsizeFactor,
+  parseFramerate,
+  parseLadder,
+  parseMaxrateFactor,
+  parseRateControl,
+  parseSubtitles
+} from './config';
 import routeEncoder from './routes/encoder';
 import routeOrigin from './routes/origin';
 import { Log } from './utils/log';
@@ -21,6 +28,11 @@ const hlsOnly = process.env.HLS_ONLY
 const subtitles = parseSubtitles();
 const ladder = parseLadder();
 const framerate = parseFramerate();
+const rateControl = {
+  mode: parseRateControl(),
+  maxrateFactor: parseMaxrateFactor(),
+  bufsizeFactor: parseBufsizeFactor()
+};
 
 if (!hlsOnly && subtitles.length > 0) {
   Log().warn(
@@ -41,6 +53,7 @@ const encoderOpts = {
     : undefined,
   ladder,
   framerate,
+  rateControl,
   subtitles
 };
 const encoder = new Encoder(
