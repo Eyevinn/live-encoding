@@ -18,10 +18,16 @@ export function boolFromEnv(value: string | undefined): boolean {
 // k/M/G suffix is accepted. Unset returns undefined so the caller falls back to
 // DEFAULT_LADDER, keeping the output byte-identical to the previous behaviour.
 //
-// Any invalid value FAILS FAST with an error naming the offending entry rather
-// than silently falling back to the default ladder: an operator who sets LADDER
-// expects that exact ladder, and an encoder that quietly ignores a bad ladder
-// and streams a different one is worse than a startup crash.
+// An empty-or-whitespace value is treated as unset (returns undefined). Container
+// platforms commonly deliver an unset optional config key to the container as an
+// empty-string env var, so an empty LADDER carries no operator intent and must
+// not crash the image at boot. A value that contains content but no valid rung
+// (e.g. ',,') is a real operator mistake and still FAILS FAST.
+//
+// Any non-empty invalid value FAILS FAST with an error naming the offending
+// entry rather than silently falling back to the default ladder: an operator who
+// sets LADDER expects that exact ladder, and an encoder that quietly ignores a
+// bad ladder and streams a different one is worse than a startup crash.
 //
 // Audio is not configurable through LADDER today; the default stereo AAC rung
 // from DEFAULT_LADDER is appended so the ladder stays a complete A/V ladder.
@@ -29,7 +35,7 @@ export function parseLadder(
   env: Record<string, string | undefined> = process.env
 ): BitrateLadderStep[] | undefined {
   const raw = env.LADDER;
-  if (raw === undefined) {
+  if (raw === undefined || raw.trim() === '') {
     return undefined;
   }
   const entries = raw
@@ -38,7 +44,7 @@ export function parseLadder(
     .filter((entry) => entry !== '');
   if (entries.length === 0) {
     throw new Error(
-      'Invalid LADDER: set but empty, provide at least one ' +
+      'Invalid LADDER: contains no rung, provide at least one ' +
         '<width>x<height>:<bitrate> rung (e.g. 1280x720:2800k) or unset it'
     );
   }
@@ -76,14 +82,16 @@ export function parseLadder(
 }
 
 // Parse the optional output framerate from the FRAMERATE env var. Typical
-// values are 25, 30, 50 or 60. Unset returns undefined so the output follows
-// the input framerate (previous behaviour). A non-positive-integer value FAILS
-// FAST rather than being silently ignored, for the same reason as parseLadder.
+// values are 25, 30, 50 or 60. Unset (or empty-or-whitespace, which container
+// platforms deliver for an unset optional key) returns undefined so the output
+// follows the input framerate (previous behaviour). A non-empty
+// non-positive-integer value FAILS FAST rather than being silently ignored, for
+// the same reason as parseLadder.
 export function parseFramerate(
   env: Record<string, string | undefined> = process.env
 ): number | undefined {
   const raw = env.FRAMERATE;
-  if (raw === undefined) {
+  if (raw === undefined || raw.trim() === '') {
     return undefined;
   }
   const trimmed = raw.trim();
@@ -129,15 +137,17 @@ export function parseSubtitles(
 }
 
 // Parse the per-rung rate-control mode from the RATE_CONTROL env var. 'cbr'
-// (the default when unset) keeps the historical strict-CBR encode byte for
-// byte; 'capped-vbr' switches to a VBV-capped variable bitrate. An unrecognised
-// value FAILS FAST naming the offending value rather than silently defaulting,
-// for the same reason as parseLadder and parseFramerate.
+// (the default when unset, or when empty-or-whitespace, which container
+// platforms deliver for an unset optional key) keeps the historical strict-CBR
+// encode byte for byte; 'capped-vbr' switches to a VBV-capped variable bitrate.
+// An unrecognised non-empty value FAILS FAST naming the offending value rather
+// than silently defaulting, for the same reason as parseLadder and
+// parseFramerate.
 export function parseRateControl(
   env: Record<string, string | undefined> = process.env
 ): RateControlMode {
   const raw = env.RATE_CONTROL;
-  if (raw === undefined) {
+  if (raw === undefined || raw.trim() === '') {
     return 'cbr';
   }
   const value = raw.trim().toLowerCase();
@@ -150,15 +160,16 @@ export function parseRateControl(
 }
 
 // Parse a positive-float rate-control factor from the environment, returning the
-// supplied default when unset. A non-numeric or non-positive value FAILS FAST
-// naming the variable and the offending value. These factors are only consulted
-// under capped-VBR; under cbr they are ignored.
+// supplied default when unset (or when empty-or-whitespace, which container
+// platforms deliver for an unset optional key). A non-empty non-numeric or
+// non-positive value FAILS FAST naming the variable and the offending value.
+// These factors are only consulted under capped-VBR; under cbr they are ignored.
 function parsePositiveFloatFactor(
   raw: string | undefined,
   name: string,
   fallback: number
 ): number {
-  if (raw === undefined) {
+  if (raw === undefined || raw.trim() === '') {
     return fallback;
   }
   const value = Number(raw.trim());

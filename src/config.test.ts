@@ -79,6 +79,14 @@ describe('parseLadder', () => {
     expect(parseLadder({})).toBeUndefined();
   });
 
+  test('treats an empty value as unset (container unset-key delivery)', () => {
+    expect(parseLadder({ LADDER: '' })).toBeUndefined();
+  });
+
+  test('treats a whitespace-only value as unset', () => {
+    expect(parseLadder({ LADDER: '   ' })).toBeUndefined();
+  });
+
   test('parses a multi-rung ladder and appends the default audio rung', () => {
     expect(
       parseLadder({ LADDER: '1920x1080:5000k,1280x720:2800k,640x360:800k' })
@@ -131,9 +139,9 @@ describe('parseLadder', () => {
     });
   });
 
-  test('fails fast on an empty value rather than falling back to the default', () => {
-    expect(() => parseLadder({ LADDER: '   ' })).toThrow(
-      /Invalid LADDER: set but empty/
+  test('fails fast on content with no valid rung rather than defaulting', () => {
+    expect(() => parseLadder({ LADDER: ',,' })).toThrow(
+      /Invalid LADDER: contains no rung/
     );
   });
 
@@ -159,6 +167,11 @@ describe('parseLadder', () => {
 describe('parseFramerate', () => {
   test('returns undefined when FRAMERATE is unset', () => {
     expect(parseFramerate({})).toBeUndefined();
+  });
+
+  test('treats an empty or whitespace-only value as unset', () => {
+    expect(parseFramerate({ FRAMERATE: '' })).toBeUndefined();
+    expect(parseFramerate({ FRAMERATE: '   ' })).toBeUndefined();
   });
 
   test('parses a positive integer', () => {
@@ -190,6 +203,11 @@ describe('parseRateControl', () => {
     expect(parseRateControl({})).toBe('cbr');
   });
 
+  test('treats an empty or whitespace-only value as unset (cbr)', () => {
+    expect(parseRateControl({ RATE_CONTROL: '' })).toBe('cbr');
+    expect(parseRateControl({ RATE_CONTROL: '   ' })).toBe('cbr');
+  });
+
   test('parses both valid modes, case- and whitespace-insensitive', () => {
     expect(parseRateControl({ RATE_CONTROL: 'cbr' })).toBe('cbr');
     expect(parseRateControl({ RATE_CONTROL: 'capped-vbr' })).toBe('capped-vbr');
@@ -208,6 +226,13 @@ describe('parseMaxrateFactor / parseBufsizeFactor', () => {
   test('return the documented defaults when unset', () => {
     expect(parseMaxrateFactor({})).toBe(1.15);
     expect(parseBufsizeFactor({})).toBe(2.0);
+  });
+
+  test('treat an empty or whitespace-only value as unset (fallback)', () => {
+    expect(parseMaxrateFactor({ MAXRATE_FACTOR: '' })).toBe(1.15);
+    expect(parseMaxrateFactor({ MAXRATE_FACTOR: '   ' })).toBe(1.15);
+    expect(parseBufsizeFactor({ BUFSIZE_FACTOR: '' })).toBe(2.0);
+    expect(parseBufsizeFactor({ BUFSIZE_FACTOR: '   ' })).toBe(2.0);
   });
 
   test('parse a positive float override', () => {
