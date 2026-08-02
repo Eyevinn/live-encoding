@@ -5,6 +5,7 @@ import {
   parseLadder,
   parseMaxrateFactor,
   parseRateControl,
+  parseSegmentDuration,
   parseSubtitles
 } from './config';
 
@@ -194,6 +195,62 @@ describe('parseFramerate', () => {
   test('fails fast on a non-numeric value', () => {
     expect(() => parseFramerate({ FRAMERATE: 'fast' })).toThrow(
       /Invalid FRAMERATE 'fast'/
+    );
+  });
+});
+
+describe('parseSegmentDuration', () => {
+  test('returns undefined when SEGMENT_DURATION is unset', () => {
+    expect(parseSegmentDuration({})).toBeUndefined();
+  });
+
+  test('treats an empty or whitespace-only value as unset', () => {
+    expect(parseSegmentDuration({ SEGMENT_DURATION: '' })).toBeUndefined();
+    expect(parseSegmentDuration({ SEGMENT_DURATION: '   ' })).toBeUndefined();
+  });
+
+  test('parses a positive integer, tolerating surrounding whitespace', () => {
+    expect(parseSegmentDuration({ SEGMENT_DURATION: '4' })).toBe(4);
+    expect(parseSegmentDuration({ SEGMENT_DURATION: ' 6 ' })).toBe(6);
+    expect(parseSegmentDuration({ SEGMENT_DURATION: '10' })).toBe(10);
+  });
+
+  test('accepts the boundary values 1 and 60', () => {
+    expect(parseSegmentDuration({ SEGMENT_DURATION: '1' })).toBe(1);
+    expect(parseSegmentDuration({ SEGMENT_DURATION: '60' })).toBe(60);
+  });
+
+  test('fails fast on zero', () => {
+    expect(() => parseSegmentDuration({ SEGMENT_DURATION: '0' })).toThrow(
+      /must be a positive integer/
+    );
+  });
+
+  test('fails fast on a negative value', () => {
+    expect(() => parseSegmentDuration({ SEGMENT_DURATION: '-4' })).toThrow(
+      /must be a positive integer/
+    );
+  });
+
+  test('fails fast on a non-integer', () => {
+    expect(() => parseSegmentDuration({ SEGMENT_DURATION: '4.5' })).toThrow(
+      /must be a positive integer/
+    );
+  });
+
+  test('fails fast on a non-numeric value', () => {
+    expect(() => parseSegmentDuration({ SEGMENT_DURATION: 'short' })).toThrow(
+      /Invalid SEGMENT_DURATION 'short'/
+    );
+  });
+
+  test('fails fast above the cap, naming the bound', () => {
+    expect(() => parseSegmentDuration({ SEGMENT_DURATION: '61' })).toThrow(
+      /must be at most 60 seconds/
+    );
+    // The likely unit mistake: a value in milliseconds.
+    expect(() => parseSegmentDuration({ SEGMENT_DURATION: '10000' })).toThrow(
+      /must be at most 60 seconds/
     );
   });
 });

@@ -60,6 +60,19 @@ export type BitrateLadderStep = {
 // output follows the input framerate, exactly as before FRAMERATE existed.
 export const DEFAULT_GOP = 48;
 
+// Default HLS segment duration in seconds, passed to ffmpeg's -hls_time. Used
+// when no SEGMENT_DURATION is configured, keeping the output identical to the
+// previous hardcoded behaviour.
+export const DEFAULT_SEGMENT_DURATION = 10;
+
+// Upper bound accepted for SEGMENT_DURATION, in seconds. With the fixed
+// -hls_list_size of 6, a 60 s duration already means a 6-minute live window
+// and roughly a segment-length worth of added latency; anything larger is far
+// outside sensible HLS practice and almost certainly a unit mistake (e.g. a
+// value in milliseconds), so it fails startup instead of silently producing an
+// unusable stream.
+export const MAX_SEGMENT_DURATION = 60;
+
 // Default ABR ladder used when the LADDER env var is unset: two video rungs plus
 // a single stereo AAC audio rung. Exported so the env parser can reuse the audio
 // rung when building a custom ladder, keeping one source of truth for the audio
@@ -143,6 +156,12 @@ export type EncoderOpts = {
   // Optional per-rung rate-control configuration. When unset (or mode 'cbr')
   // the video encode is strict CBR, byte-identical to the previous behaviour.
   rateControl?: RateControlOpts;
+  // Optional HLS segment duration in seconds, passed to -hls_time. When unset
+  // the default of DEFAULT_SEGMENT_DURATION (10) is used, byte-identical to the
+  // previous behaviour. ffmpeg's hls muxer cuts segments at the first keyframe
+  // at or after this duration, so actual segment lengths round up to the
+  // keyframe cadence (2 s when FRAMERATE is set).
+  segmentDuration?: number;
 };
 
 type Process = {
@@ -219,7 +238,8 @@ export class Encoder {
       this.opts.hlsOnly,
       ladder,
       this.mediaDir,
-      subtitles
+      subtitles,
+      this.opts.segmentDuration
     );
     const ffmpegArgs = inputArgs.concat(filterComplexArgs).concat(outputArgs);
 
@@ -697,7 +717,8 @@ export function generateOutput(
   hlsOnly: boolean,
   ladder: BitrateLadderStep[],
   mediaDir: string,
-  subtitles: SubtitleTrack[] = []
+  subtitles: SubtitleTrack[] = [],
+  segmentDuration: number = DEFAULT_SEGMENT_DURATION
 ): string[] {
   if (hlsOnly) {
     let varStreamMap = '';
@@ -731,7 +752,7 @@ export function generateOutput(
       '-f',
       'hls',
       '-hls_time',
-      '10',
+      `${segmentDuration}`,
       '-hls_flags',
       'independent_segments+delete_segments',
       '-hls_segment_type',

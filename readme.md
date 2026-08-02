@@ -55,6 +55,7 @@ Live transcoding to HLS and optionally MPEG-DASH. Provides origin for CDN shield
 | `RATE_CONTROL`       | Per-rung H.264 rate-control mode: `cbr` (strict constant bitrate) or `capped-vbr` (VBV-capped variable bitrate). An invalid value fails startup                                                                            | `cbr`                        |
 | `MAXRATE_FACTOR`     | Positive float. Under `capped-vbr` the per-rung `-maxrate` is `round(MAXRATE_FACTOR x target bitrate)`. Ignored under `cbr`                                                                                                | `1.15`                       |
 | `BUFSIZE_FACTOR`     | Positive float. Under `capped-vbr` the per-rung `-bufsize` is `round(BUFSIZE_FACTOR x maxrate)`. Ignored under `cbr`                                                                                                       | `2.0`                        |
+| `SEGMENT_DURATION`   | HLS segment duration in seconds, passed to `-hls_time`. A positive integer of at most `60`. An invalid value fails startup. If not set the historical `10` is used                                                         | `10`                         |
 | `SUBTITLE_URL`       | Sidecar WebVTT source URL fetched alongside the A/V input. If not set the output stays video+audio only                                                                                                                    |                              |
 | `SUBTITLE_LANGUAGE`  | BCP-47 language tag for the subtitle rendition, e.g. `en`                                                                                                                                                                  | `und`                        |
 | `SUBTITLE_NAME`      | Display name for the subtitle rendition, e.g. `English`                                                                                                                                                                    | value of `SUBTITLE_LANGUAGE` |
@@ -117,6 +118,19 @@ The peak and buffer are derived from two documented constants, overridable per d
 - `-bufsize` = `round(BUFSIZE_FACTOR x maxrate)`, `BUFSIZE_FACTOR` defaulting to `2.0`
 
 Both factors are positive floats and are only consulted under `capped-vbr`; they are ignored under `cbr`. An invalid `RATE_CONTROL`, `MAXRATE_FACTOR` or `BUFSIZE_FACTOR` value fails startup with an error naming the offending value, rather than silently falling back, for the same reason as `LADDER` and `FRAMERATE`.
+
+### Segment duration
+
+Set `SEGMENT_DURATION` to a positive integer number of seconds to change the HLS segment duration (`-hls_time`) from the default `10`. Shorter segments reduce end-to-end latency at the cost of more HTTP requests and playlist churn; typical live values are `4`, `6` or `10`.
+
+```
+% ORIGIN_DIR=/data \
+  FRAMERATE=50 \
+  SEGMENT_DURATION=4 \
+  npm start
+```
+
+ffmpeg's HLS muxer cuts a segment at the first keyframe at or after the requested duration, so actual segment lengths round up to the keyframe cadence. With `FRAMERATE` set the GOP is 2 x framerate (a 2 s keyframe cadence), meaning an even `SEGMENT_DURATION` is hit exactly while an odd one is extended to the next keyframe (`SEGMENT_DURATION=5` yields ~6 s segments). This is valid HLS, so an odd value is accepted with a startup warning rather than rejected. Values above `60` fail startup: with the fixed playlist window of 6 segments they are far outside sensible HLS practice and almost certainly a unit mistake. An invalid value fails startup with an error naming the offending value, for the same reason as `LADDER` and `FRAMERATE`.
 
 ### CDN Pull
 

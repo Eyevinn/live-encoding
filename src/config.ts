@@ -3,6 +3,7 @@ import {
   DEFAULT_BUFSIZE_FACTOR,
   DEFAULT_LADDER,
   DEFAULT_MAXRATE_FACTOR,
+  MAX_SEGMENT_DURATION,
   RateControlMode,
   SubtitleTrack
 } from './encoder';
@@ -103,6 +104,48 @@ export function parseFramerate(
     );
   }
   return fps;
+}
+
+// Parse the optional HLS segment duration in seconds from the SEGMENT_DURATION
+// env var, passed to ffmpeg's -hls_time. Unset (or empty-or-whitespace, which
+// container platforms deliver for an unset optional key) returns undefined so
+// the encoder falls back to DEFAULT_SEGMENT_DURATION (10), keeping the output
+// identical to the previous hardcoded behaviour.
+//
+// The value must be a positive integer no larger than MAX_SEGMENT_DURATION
+// (60): sub-second or fractional durations are not supported, and anything
+// above the cap is almost certainly a unit mistake (e.g. milliseconds) that
+// would silently produce an unusable live window. A non-empty invalid value
+// FAILS FAST naming the offending value, for the same reason as parseLadder
+// and parseFramerate.
+//
+// Note that ffmpeg's hls muxer cuts a segment at the first keyframe at or
+// after -hls_time, so actual segment lengths round up to the keyframe cadence
+// (2 s when FRAMERATE is set). An odd duration is therefore accepted rather
+// than rejected; server.ts logs a warning when the configured duration cannot
+// be hit exactly.
+export function parseSegmentDuration(
+  env: Record<string, string | undefined> = process.env
+): number | undefined {
+  const raw = env.SEGMENT_DURATION;
+  if (raw === undefined || raw.trim() === '') {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  const seconds = Number(trimmed);
+  if (!/^\d+$/.test(trimmed) || seconds <= 0) {
+    throw new Error(
+      `Invalid SEGMENT_DURATION '${raw}': must be a positive integer ` +
+        'number of seconds, e.g. 4, 6 or 10'
+    );
+  }
+  if (seconds > MAX_SEGMENT_DURATION) {
+    throw new Error(
+      `Invalid SEGMENT_DURATION '${raw}': must be at most ` +
+        `${MAX_SEGMENT_DURATION} seconds`
+    );
+  }
+  return seconds;
 }
 
 // Parse the optional sidecar WebVTT subtitle configuration from the
