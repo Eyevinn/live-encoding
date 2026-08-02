@@ -7,6 +7,7 @@ import {
   parseLadder,
   parseMaxrateFactor,
   parseRateControl,
+  parseSegmentDuration,
   parseSubtitles
 } from './config';
 import routeEncoder from './routes/encoder';
@@ -33,11 +34,24 @@ const rateControl = {
   maxrateFactor: parseMaxrateFactor(),
   bufsizeFactor: parseBufsizeFactor()
 };
+const segmentDuration = parseSegmentDuration();
 
 if (!hlsOnly && subtitles.length > 0) {
   Log().warn(
     'SUBTITLE_URL is set but HLS_ONLY is false, subtitles are only carried in ' +
       'the HLS output and will be discarded'
+  );
+}
+
+// With FRAMERATE set the GOP is 2 x framerate, a 2 s keyframe cadence, and
+// ffmpeg's hls muxer only cuts segments at keyframes, so a duration that is
+// not a multiple of 2 is extended to the next keyframe (e.g. 5 becomes 6).
+// This is valid HLS, so it is a warning rather than a startup failure.
+if (segmentDuration !== undefined && framerate && segmentDuration % 2 !== 0) {
+  Log().warn(
+    `SEGMENT_DURATION ${segmentDuration} is not a multiple of the 2 s ` +
+      'keyframe cadence derived from FRAMERATE, actual segments will be ' +
+      'extended to the next keyframe'
   );
 }
 
@@ -54,6 +68,7 @@ const encoderOpts = {
   ladder,
   framerate,
   rateControl,
+  segmentDuration,
   subtitles
 };
 const encoder = new Encoder(

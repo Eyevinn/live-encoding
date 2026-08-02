@@ -7,6 +7,7 @@ import { spawn } from 'child_process';
 import {
   BitrateLadderStep,
   DEFAULT_INPUT_DIAL_TIMEOUT_SEC,
+  DEFAULT_SEGMENT_DURATION,
   Encoder,
   SubtitleTrack,
   bitrateToBps,
@@ -277,6 +278,28 @@ describe('encoder util', () => {
       '/data/hls/media_%v.m3u8'
     ]);
   });
+
+  test('generateOutput defaults -hls_time to the documented 10 seconds', () => {
+    expect(DEFAULT_SEGMENT_DURATION).toBe(10);
+    const args = generateOutput(true, testLadder, '/data');
+    expect(args[args.indexOf('-hls_time') + 1]).toBe('10');
+  });
+
+  test('generateOutput passes a configured segment duration to -hls_time', () => {
+    const args = generateOutput(true, testLadder, '/data', [], 4);
+    expect(args[args.indexOf('-hls_time') + 1]).toBe('4');
+    // Only the segment duration changes, the rest of the output args do not.
+    const defaults = generateOutput(true, testLadder, '/data');
+    expect(args.filter((a) => a !== '4')).toEqual(
+      defaults.filter((a) => a !== '10')
+    );
+  });
+
+  test('generateOutput with an explicit default duration is byte-identical', () => {
+    expect(
+      generateOutput(true, testLadder, '/data', [], DEFAULT_SEGMENT_DURATION)
+    ).toEqual(generateOutput(true, testLadder, '/data'));
+  });
 });
 
 describe('bitrateToBps', () => {
@@ -540,7 +563,11 @@ const makeProc = (autoExit = false) => {
 
 const buildEncoder = (
   mediaDir: string,
-  opts: { inputUrl?: string; inputDialTimeoutSec?: number }
+  opts: {
+    inputUrl?: string;
+    inputDialTimeoutSec?: number;
+    segmentDuration?: number;
+  }
 ) =>
   new Encoder('ffmpeg', 'packager', 1935, 'stream', mediaDir, {
     hlsOnly: true,
@@ -671,6 +698,22 @@ describe('encoder SRT caller dial lifecycle', () => {
     expect(ffmpegArgs[ffmpegArgs.indexOf('-var_stream_map') + 1]).toBe(
       'v:0,a:0'
     );
+  });
+
+  test('wires a custom segment duration through to the spawned ffmpeg args', async () => {
+    const encoder = buildEncoder('/media', { segmentDuration: 4 });
+    await encoder.start({});
+
+    const ffmpegArgs = mockedSpawn.mock.calls[0][1] as string[];
+    expect(ffmpegArgs[ffmpegArgs.indexOf('-hls_time') + 1]).toBe('4');
+  });
+
+  test('spawns ffmpeg with the default -hls_time when no duration is set', async () => {
+    const encoder = buildEncoder('/media', {});
+    await encoder.start({});
+
+    const ffmpegArgs = mockedSpawn.mock.calls[0][1] as string[];
+    expect(ffmpegArgs[ffmpegArgs.indexOf('-hls_time') + 1]).toBe('10');
   });
 
   test('redacts secrets in ffmpeg stderr output', async () => {
