@@ -10,7 +10,8 @@ import {
   DEFAULT_SEGMENT_DURATION,
   DEFAULT_SEGMENT_TYPE,
   Encoder,
-  FMP4_INIT_FILENAME,
+  FMP4_INIT_FILENAME_MULTI,
+  FMP4_INIT_FILENAME_SINGLE,
   SubtitleTrack,
   bitrateToBps,
   finalizeSubtitleMasterFile,
@@ -355,13 +356,45 @@ describe('encoder util', () => {
     ]);
   });
 
-  test('the fmp4 init template expands per variant', () => {
-    // Every rendition needs its own init segment under -var_stream_map. ffmpeg
-    // will insert a variant suffix on its own if the template lacks one, so
-    // this does not guard against a muxer error; it guards against someone
-    // "simplifying" the template to a single shared init.mp4 and leaving the
-    // per-variant naming to an unpinned ffmpeg's discretion.
-    expect(FMP4_INIT_FILENAME).toContain('%v');
+  test('a multi-rung ladder gets a per-variant init template', () => {
+    // Each rendition carries its own moov, so each needs its own init segment.
+    const args = generateOutput(
+      true,
+      testLadder,
+      '/data',
+      [],
+      DEFAULT_SEGMENT_DURATION,
+      'fmp4'
+    );
+    expect(args[args.indexOf('-hls_fmp4_init_filename') + 1]).toBe(
+      FMP4_INIT_FILENAME_MULTI
+    );
+    expect(FMP4_INIT_FILENAME_MULTI).toContain('%v');
+  });
+
+  test('a single-rung ladder gets a plain init name, with no literal %v', () => {
+    // ffmpeg expands %v only when there is more than one variant stream. With
+    // one rung it writes a file called literally 'init_%v.mp4' and references
+    // that from EXT-X-MAP, where the percent sign starts a percent-encoding
+    // escape, so the playlist is ambiguous to players and CDNs.
+    const videoRungs = testLadder.filter((step) => step.mediaType === 'video');
+    const singleRung = testLadder
+      .filter((step) => step.mediaType !== 'video')
+      .concat(videoRungs.slice(0, 1));
+    const args = generateOutput(
+      true,
+      singleRung,
+      '/data',
+      [],
+      DEFAULT_SEGMENT_DURATION,
+      'fmp4'
+    );
+    expect(args[args.indexOf('-hls_fmp4_init_filename') + 1]).toBe(
+      FMP4_INIT_FILENAME_SINGLE
+    );
+    expect(args[args.indexOf('-hls_fmp4_init_filename') + 1]).not.toContain(
+      '%'
+    );
   });
 
   test('segment duration and segment type are independent', () => {

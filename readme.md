@@ -146,6 +146,8 @@ Set `SEGMENT_TYPE=fmp4` to emit fragmented MP4 instead of the default MPEG-TS. T
   npm start
 ```
 
+The initialisation segment is named `init.mp4` for a single-rung ladder and `init_%v.mp4` (expanded per variant, e.g. `init_0.mp4`) for a multi-rung one. ffmpeg only expands `%v` when there is more than one variant stream, so a fixed `init_%v.mp4` template would leave a single-rung ladder serving a file called literally `init_%v.mp4`, with that name in `#EXT-X-MAP`, where the percent sign reads as a percent-encoding escape.
+
 Fragmented MP4 is the CMAF-style layout, which matters when the output is consumed by something other than a plain HLS player: MSE-based players, CMAF packagers, ISO BMFF tooling (`mp4ff`, `MP4Box`), and anything that needs to read or write box structure per segment. It is also format-shared with DASH, so the same segments can later be described by a DASH manifest without re-segmenting. MPEG-TS remains the default, so existing deployments are unaffected.
 
 `SEGMENT_TYPE` only reaches the HLS muxer. With `HLS_ONLY=false` it is ignored, and the encoder logs a warning at startup rather than failing.

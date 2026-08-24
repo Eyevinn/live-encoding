@@ -84,17 +84,29 @@ export type SegmentType = 'mpegts' | 'fmp4';
 // behaviour before SEGMENT_TYPE existed.
 export const DEFAULT_SEGMENT_TYPE: SegmentType = 'mpegts';
 
-// Name template for the fMP4 initialisation segment, resolved by ffmpeg
-// relative to the media playlist directory and referenced from the playlist as
-// #EXT-X-MAP. With -var_stream_map every rendition needs its OWN init segment,
-// since each carries that rendition's moov. The %v is explicit rather than
-// relied upon: ffmpeg does insert a variant suffix itself when the template
-// lacks one (verified on 8.1.1, which produced init_0.mp4 and init_1.mp4 from a
-// plain 'init.mp4'), but the container image installs an unpinned ffmpeg, so
-// spelling the expansion out keeps the filenames ours rather than a muxer
-// implementation detail, and makes a later "simplification" to one shared
-// init.mp4 a visible change instead of a silent per-variant regression.
-export const FMP4_INIT_FILENAME = 'init_%v.mp4';
+// Name of the fMP4 initialisation segment, resolved by ffmpeg relative to the
+// media playlist directory and referenced from the playlist as #EXT-X-MAP.
+//
+// The two ladder shapes need different names, and getting this wrong is not
+// cosmetic. ffmpeg expands %v only when there is MORE THAN ONE variant stream.
+// With a single-rung ladder it writes a file called literally 'init_%v.mp4'
+// and puts that name in EXT-X-MAP, where a percent sign is the start of a
+// percent-encoding escape: the playlist is then ambiguous to a player and can
+// be mangled or rejected outright by a CDN. Verified against ffmpeg 8.1.1.
+//
+// With more than one rung each rendition carries its own moov and therefore
+// needs its own init segment, so the %v is required there. ffmpeg would insert
+// a variant suffix itself if it were omitted, but the container installs an
+// unpinned ffmpeg, so spelling it out keeps the naming ours rather than a muxer
+// implementation detail.
+export const FMP4_INIT_FILENAME_SINGLE = 'init.mp4';
+export const FMP4_INIT_FILENAME_MULTI = 'init_%v.mp4';
+
+export function fmp4InitFilename(variantCount: number): string {
+  return variantCount > 1
+    ? FMP4_INIT_FILENAME_MULTI
+    : FMP4_INIT_FILENAME_SINGLE;
+}
 
 // Default ABR ladder used when the LADDER env var is unset: two video rungs plus
 // a single stereo AAC audio rung. Exported so the env parser can reuse the audio
@@ -799,7 +811,7 @@ export function generateOutput(
             '-hls_segment_type',
             'fmp4',
             '-hls_fmp4_init_filename',
-            FMP4_INIT_FILENAME,
+            fmp4InitFilename(videos.length),
             '-hls_segment_filename',
             `${mediaDir}/hls/media_%v_%02d.m4s`
           ]
