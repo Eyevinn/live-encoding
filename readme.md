@@ -56,6 +56,8 @@ Live transcoding to HLS and optionally MPEG-DASH. Provides origin for CDN shield
 | `MAXRATE_FACTOR`     | Positive float. Under `capped-vbr` the per-rung `-maxrate` is `round(MAXRATE_FACTOR x target bitrate)`. Ignored under `cbr`                                                                                                | `1.15`                       |
 | `BUFSIZE_FACTOR`     | Positive float. Under `capped-vbr` the per-rung `-bufsize` is `round(BUFSIZE_FACTOR x maxrate)`. Ignored under `cbr`                                                                                                       | `2.0`                        |
 | `SEGMENT_DURATION`   | HLS segment duration in seconds, passed to `-hls_time`. A positive integer of at most `60`. An invalid value fails startup. If not set the historical `10` is used                                                         | `10`                         |
+| `SEGMENT_TYPE`       | HLS segment container, passed to `-hls_segment_type`: `mpegts` (MPEG-TS `.ts` segments) or `fmp4` (an init segment plus fragmented-MP4 `.m4s` segments). An invalid value fails startup                                    | `mpegts`                     |
+| `PROGRAM_DATE_TIME`  | Set to `true` or `1` to write an `#EXT-X-PROGRAM-DATE-TIME` tag for every segment in the media playlists, mapping each segment to wall-clock time                                                                          | `false`                      |
 | `SUBTITLE_URL`       | Sidecar WebVTT source URL fetched alongside the A/V input. If not set the output stays video+audio only                                                                                                                    |                              |
 | `SUBTITLE_LANGUAGE`  | BCP-47 language tag for the subtitle rendition, e.g. `en`                                                                                                                                                                  | `und`                        |
 | `SUBTITLE_NAME`      | Display name for the subtitle rendition, e.g. `English`                                                                                                                                                                    | value of `SUBTITLE_LANGUAGE` |
@@ -131,6 +133,34 @@ Set `SEGMENT_DURATION` to a positive integer number of seconds to change the HLS
 ```
 
 ffmpeg's HLS muxer cuts a segment at the first keyframe at or after the requested duration, so actual segment lengths round up to the keyframe cadence. With `FRAMERATE` set the GOP is 2 x framerate (a 2 s keyframe cadence), meaning an even `SEGMENT_DURATION` is hit exactly while an odd one is extended to the next keyframe (`SEGMENT_DURATION=5` yields ~6 s segments). This is valid HLS, so an odd value is accepted with a startup warning rather than rejected. Values above `60` fail startup: with the fixed playlist window of 6 segments they are far outside sensible HLS practice and almost certainly a unit mistake. An invalid value fails startup with an error naming the offending value, for the same reason as `LADDER` and `FRAMERATE`.
+
+### Segment container (MPEG-TS or fMP4/CMAF)
+
+Set `SEGMENT_TYPE=fmp4` to emit fragmented MP4 instead of the default MPEG-TS. The HLS output then consists of one initialisation segment per rendition (`init_0.mp4`, `init_1.mp4`, ...) referenced from each media playlist as `#EXT-X-MAP`, plus `.m4s` media fragments.
+
+```
+% ORIGIN_DIR=/data \
+  FRAMERATE=50 \
+  SEGMENT_TYPE=fmp4 \
+  SEGMENT_DURATION=4 \
+  npm start
+```
+
+Fragmented MP4 is the CMAF-style layout, which matters when the output is consumed by something other than a plain HLS player: MSE-based players, CMAF packagers, ISO BMFF tooling (`mp4ff`, `MP4Box`), and anything that needs to read or write box structure per segment. It is also format-shared with DASH, so the same segments can later be described by a DASH manifest without re-segmenting. MPEG-TS remains the default, so existing deployments are unaffected.
+
+`SEGMENT_TYPE` only reaches the HLS muxer. With `HLS_ONLY=false` it is ignored, and the encoder logs a warning at startup rather than failing.
+
+### Program date time
+
+Set `PROGRAM_DATE_TIME=true` to add an `#EXT-X-PROGRAM-DATE-TIME` tag to every segment in the media playlists (ffmpeg's `program_date_time` HLS flag). Each segment then carries the wall-clock time of its first sample, which is what a player needs for a date-based seek, and what downstream tooling needs to correlate a segment with events recorded outside the stream.
+
+```
+% ORIGIN_DIR=/data \
+  PROGRAM_DATE_TIME=true \
+  npm start
+```
+
+The timestamps come from the encoder host's clock, so they are only as accurate as that clock: keep the host on NTP if anything downstream depends on them. This is independent of `SEGMENT_TYPE` and applies to MPEG-TS and fMP4 output alike. It defaults to off, leaving the playlists byte-identical to previous releases.
 
 ### CDN Pull
 

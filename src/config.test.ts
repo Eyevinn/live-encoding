@@ -6,6 +6,7 @@ import {
   parseMaxrateFactor,
   parseRateControl,
   parseSegmentDuration,
+  parseSegmentType,
   parseSubtitles
 } from './config';
 
@@ -251,6 +252,40 @@ describe('parseSegmentDuration', () => {
     // The likely unit mistake: a value in milliseconds.
     expect(() => parseSegmentDuration({ SEGMENT_DURATION: '10000' })).toThrow(
       /must be at most 60 seconds/
+    );
+  });
+});
+
+describe('parseSegmentType', () => {
+  test('returns undefined when SEGMENT_TYPE is unset', () => {
+    expect(parseSegmentType({})).toBeUndefined();
+  });
+
+  test('treats an empty or whitespace-only value as unset', () => {
+    expect(parseSegmentType({ SEGMENT_TYPE: '' })).toBeUndefined();
+    expect(parseSegmentType({ SEGMENT_TYPE: '   ' })).toBeUndefined();
+  });
+
+  test('parses both containers, tolerating case and whitespace', () => {
+    expect(parseSegmentType({ SEGMENT_TYPE: 'mpegts' })).toBe('mpegts');
+    expect(parseSegmentType({ SEGMENT_TYPE: 'fmp4' })).toBe('fmp4');
+    expect(parseSegmentType({ SEGMENT_TYPE: ' FMP4 ' })).toBe('fmp4');
+  });
+
+  test('fails fast on an unknown container, naming the offending value', () => {
+    expect(() => parseSegmentType({ SEGMENT_TYPE: 'cmaf' })).toThrow(
+      /Invalid SEGMENT_TYPE 'cmaf'/
+    );
+  });
+
+  test('fails fast on a near-miss spelling rather than falling back', () => {
+    // The failure mode this guards: a typo silently serving mpegts to a
+    // downstream that was configured for fragmented MP4.
+    expect(() => parseSegmentType({ SEGMENT_TYPE: 'fmp4 ts' })).toThrow(
+      /must be 'mpegts' or 'fmp4'/
+    );
+    expect(() => parseSegmentType({ SEGMENT_TYPE: 'mp4' })).toThrow(
+      /must be 'mpegts' or 'fmp4'/
     );
   });
 });

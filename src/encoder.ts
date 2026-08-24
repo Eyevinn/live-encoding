@@ -73,6 +73,24 @@ export const DEFAULT_SEGMENT_DURATION = 10;
 // unusable stream.
 export const MAX_SEGMENT_DURATION = 60;
 
+// Segment container for the HLS output, passed to ffmpeg's -hls_segment_type.
+// 'mpegts' is the historical output. 'fmp4' emits fragmented MP4 instead: one
+// initialisation segment plus .m4s media fragments, the CMAF-style layout that
+// MSE players, CMAF packagers and ISO BMFF tooling expect, and the only one of
+// the two that a DASH manifest can be added over without re-segmenting.
+export type SegmentType = 'mpegts' | 'fmp4';
+
+// Default HLS segment container. 'mpegts' keeps the output identical to the
+// behaviour before SEGMENT_TYPE existed.
+export const DEFAULT_SEGMENT_TYPE: SegmentType = 'mpegts';
+
+// Name template for the fMP4 initialisation segment, resolved by ffmpeg
+// relative to the media playlist directory and referenced from the playlist as
+// #EXT-X-MAP. The %v is mandatory rather than cosmetic: with -var_stream_map
+// each rendition needs its own init segment, and ffmpeg rejects an init
+// template that cannot be expanded per variant.
+export const FMP4_INIT_FILENAME = 'init_%v.mp4';
+
 // Default ABR ladder used when the LADDER env var is unset: two video rungs plus
 // a single stereo AAC audio rung. Exported so the env parser can reuse the audio
 // rung when building a custom ladder, keeping one source of truth for the audio
@@ -162,6 +180,16 @@ export type EncoderOpts = {
   // at or after this duration, so actual segment lengths round up to the
   // keyframe cadence (2 s when FRAMERATE is set).
   segmentDuration?: number;
+  // Optional HLS segment container, passed to -hls_segment_type. When unset the
+  // default of DEFAULT_SEGMENT_TYPE ('mpegts') is used, byte-identical to the
+  // previous behaviour. 'fmp4' switches the output to an init segment plus
+  // .m4s fragments.
+  segmentType?: SegmentType;
+  // When true, ffmpeg writes an #EXT-X-PROGRAM-DATE-TIME tag for every segment
+  // in the media playlists, mapping each segment to wall-clock time. Defaults
+  // to false, byte-identical to the previous behaviour. Independent of the
+  // segment container: it applies to both mpegts and fmp4 output.
+  programDateTime?: boolean;
 };
 
 type Process = {
@@ -239,7 +267,9 @@ export class Encoder {
       ladder,
       this.mediaDir,
       subtitles,
-      this.opts.segmentDuration
+      this.opts.segmentDuration,
+      this.opts.segmentType,
+      this.opts.programDateTime
     );
     const ffmpegArgs = inputArgs.concat(filterComplexArgs).concat(outputArgs);
 
@@ -718,7 +748,9 @@ export function generateOutput(
   ladder: BitrateLadderStep[],
   mediaDir: string,
   subtitles: SubtitleTrack[] = [],
-  segmentDuration: number = DEFAULT_SEGMENT_DURATION
+  segmentDuration: number = DEFAULT_SEGMENT_DURATION,
+  segmentType: SegmentType = DEFAULT_SEGMENT_TYPE,
+  programDateTime = false
 ): string[] {
   if (hlsOnly) {
     let varStreamMap = '';
@@ -748,17 +780,38 @@ export function generateOutput(
     if (subtitles.length > 0) {
       subtitleArgs.push('-c:s', 'webvtt');
     }
+    // program_date_time is appended last so the historical flag string is
+    // unchanged when it is off.
+    const hlsFlags = programDateTime
+      ? 'independent_segments+delete_segments+program_date_time'
+      : 'independent_segments+delete_segments';
+    // fMP4 needs two things mpegts does not: an init-segment template, and a
+    // .m4s extension on the fragments. Both are muxer-level, so the rest of the
+    // output arguments are shared.
+    const segmentArgs =
+      segmentType === 'fmp4'
+        ? [
+            '-hls_segment_type',
+            'fmp4',
+            '-hls_fmp4_init_filename',
+            FMP4_INIT_FILENAME,
+            '-hls_segment_filename',
+            `${mediaDir}/hls/media_%v_%02d.m4s`
+          ]
+        : [
+            '-hls_segment_type',
+            'mpegts',
+            '-hls_segment_filename',
+            `${mediaDir}/hls/media_%v_%02d.ts`
+          ];
     return subtitleArgs.concat([
       '-f',
       'hls',
       '-hls_time',
       `${segmentDuration}`,
       '-hls_flags',
-      'independent_segments+delete_segments',
-      '-hls_segment_type',
-      'mpegts',
-      '-hls_segment_filename',
-      `${mediaDir}/hls/media_%v_%02d.ts`,
+      hlsFlags,
+      ...segmentArgs,
       '-hls_list_size',
       '6',
       '-master_pl_name',

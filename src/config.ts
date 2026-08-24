@@ -5,6 +5,7 @@ import {
   DEFAULT_MAXRATE_FACTOR,
   MAX_SEGMENT_DURATION,
   RateControlMode,
+  SegmentType,
   SubtitleTrack
 } from './encoder';
 
@@ -146,6 +147,31 @@ export function parseSegmentDuration(
     );
   }
   return seconds;
+}
+
+// Parse the optional HLS segment container from the SEGMENT_TYPE env var,
+// passed to ffmpeg's -hls_segment_type. Unset (or empty-or-whitespace, which
+// container platforms deliver for an unset optional key) returns undefined so
+// the encoder falls back to DEFAULT_SEGMENT_TYPE ('mpegts'), keeping the output
+// identical to the previous hardcoded behaviour.
+//
+// 'fmp4' switches the output to an initialisation segment plus .m4s fragments.
+// A non-empty invalid value FAILS FAST naming the offending value, for the same
+// reason as parseLadder and parseRateControl: a typo that silently fell back to
+// mpegts would serve a stream in the wrong container, which downstream CMAF
+// tooling only discovers after the fact.
+export function parseSegmentType(
+  env: Record<string, string | undefined> = process.env
+): SegmentType | undefined {
+  const raw = env.SEGMENT_TYPE;
+  if (raw === undefined || raw.trim() === '') {
+    return undefined;
+  }
+  const value = raw.trim().toLowerCase();
+  if (value === 'mpegts' || value === 'fmp4') {
+    return value;
+  }
+  throw new Error(`Invalid SEGMENT_TYPE '${raw}': must be 'mpegts' or 'fmp4'`);
 }
 
 // Parse the optional sidecar WebVTT subtitle configuration from the

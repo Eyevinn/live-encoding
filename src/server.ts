@@ -2,12 +2,14 @@ import fastifyStatic from '@fastify/static';
 import api from './api';
 import { Encoder } from './encoder';
 import {
+  boolFromEnv,
   parseBufsizeFactor,
   parseFramerate,
   parseLadder,
   parseMaxrateFactor,
   parseRateControl,
   parseSegmentDuration,
+  parseSegmentType,
   parseSubtitles
 } from './config';
 import routeEncoder from './routes/encoder';
@@ -35,11 +37,23 @@ const rateControl = {
   bufsizeFactor: parseBufsizeFactor()
 };
 const segmentDuration = parseSegmentDuration();
+const segmentType = parseSegmentType();
+const programDateTime = boolFromEnv(process.env.PROGRAM_DATE_TIME);
 
 if (!hlsOnly && subtitles.length > 0) {
   Log().warn(
     'SUBTITLE_URL is set but HLS_ONLY is false, subtitles are only carried in ' +
       'the HLS output and will be discarded'
+  );
+}
+
+// SEGMENT_TYPE only reaches the hls muxer, so it is inert on the non-HLS path.
+// Warning rather than failing keeps a mixed-config deployment starting, exactly
+// as the SUBTITLE_URL case above does.
+if (!hlsOnly && segmentType !== undefined) {
+  Log().warn(
+    `SEGMENT_TYPE is set to '${segmentType}' but HLS_ONLY is false, the ` +
+      'segment container only applies to the HLS output and will be ignored'
   );
 }
 
@@ -69,6 +83,8 @@ const encoderOpts = {
   framerate,
   rateControl,
   segmentDuration,
+  segmentType,
+  programDateTime,
   subtitles
 };
 const encoder = new Encoder(

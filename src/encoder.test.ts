@@ -8,7 +8,9 @@ import {
   BitrateLadderStep,
   DEFAULT_INPUT_DIAL_TIMEOUT_SEC,
   DEFAULT_SEGMENT_DURATION,
+  DEFAULT_SEGMENT_TYPE,
   Encoder,
+  FMP4_INIT_FILENAME,
   SubtitleTrack,
   bitrateToBps,
   finalizeSubtitleMasterFile,
@@ -299,6 +301,116 @@ describe('encoder util', () => {
     expect(
       generateOutput(true, testLadder, '/data', [], DEFAULT_SEGMENT_DURATION)
     ).toEqual(generateOutput(true, testLadder, '/data'));
+  });
+
+  test('generateOutput defaults the segment container to mpegts', () => {
+    expect(DEFAULT_SEGMENT_TYPE).toBe('mpegts');
+    const args = generateOutput(true, testLadder, '/data');
+    expect(args[args.indexOf('-hls_segment_type') + 1]).toBe('mpegts');
+    expect(args).not.toContain('-hls_fmp4_init_filename');
+  });
+
+  test('generateOutput with an explicit mpegts segment type is byte-identical', () => {
+    expect(
+      generateOutput(
+        true,
+        testLadder,
+        '/data',
+        [],
+        DEFAULT_SEGMENT_DURATION,
+        DEFAULT_SEGMENT_TYPE
+      )
+    ).toEqual(generateOutput(true, testLadder, '/data'));
+  });
+
+  test('generateOutput emits fmp4 segments, an init template and .m4s fragments', () => {
+    const args = generateOutput(
+      true,
+      testLadder,
+      '/data',
+      [],
+      DEFAULT_SEGMENT_DURATION,
+      'fmp4'
+    );
+    expect(args).toEqual([
+      '-f',
+      'hls',
+      '-hls_time',
+      '10',
+      '-hls_flags',
+      'independent_segments+delete_segments',
+      '-hls_segment_type',
+      'fmp4',
+      '-hls_fmp4_init_filename',
+      'init_%v.mp4',
+      '-hls_segment_filename',
+      '/data/hls/media_%v_%02d.m4s',
+      '-hls_list_size',
+      '6',
+      '-master_pl_name',
+      'index.m3u8',
+      '-var_stream_map',
+      'v:0,a:0 v:1,a:1',
+      '/data/hls/media_%v.m3u8'
+    ]);
+  });
+
+  test('the fmp4 init template is expandable per variant, which ffmpeg requires', () => {
+    // -var_stream_map gives every rendition its own init segment, and ffmpeg
+    // rejects an init filename that cannot be expanded per variant. This is the
+    // regression guard for someone "simplifying" it to init.mp4.
+    expect(FMP4_INIT_FILENAME).toContain('%v');
+  });
+
+  test('segment duration and segment type are independent', () => {
+    const args = generateOutput(true, testLadder, '/data', [], 4, 'fmp4');
+    expect(args[args.indexOf('-hls_time') + 1]).toBe('4');
+    expect(args[args.indexOf('-hls_segment_type') + 1]).toBe('fmp4');
+  });
+
+  test('generateOutput omits program_date_time by default', () => {
+    const args = generateOutput(true, testLadder, '/data');
+    expect(args[args.indexOf('-hls_flags') + 1]).toBe(
+      'independent_segments+delete_segments'
+    );
+  });
+
+  test('generateOutput appends program_date_time to -hls_flags when enabled', () => {
+    const args = generateOutput(
+      true,
+      testLadder,
+      '/data',
+      [],
+      DEFAULT_SEGMENT_DURATION,
+      DEFAULT_SEGMENT_TYPE,
+      true
+    );
+    expect(args[args.indexOf('-hls_flags') + 1]).toBe(
+      'independent_segments+delete_segments+program_date_time'
+    );
+    // Nothing else moves: the flag string is the only difference.
+    const defaults = generateOutput(true, testLadder, '/data');
+    expect(
+      args.filter(
+        (a) => a !== 'independent_segments+delete_segments+program_date_time'
+      )
+    ).toEqual(
+      defaults.filter((a) => a !== 'independent_segments+delete_segments')
+    );
+  });
+
+  test('program_date_time applies to mpegts output too, not just fmp4', () => {
+    const args = generateOutput(
+      true,
+      testLadder,
+      '/data',
+      [],
+      DEFAULT_SEGMENT_DURATION,
+      'mpegts',
+      true
+    );
+    expect(args[args.indexOf('-hls_flags') + 1]).toContain('program_date_time');
+    expect(args[args.indexOf('-hls_segment_type') + 1]).toBe('mpegts');
   });
 });
 
