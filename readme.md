@@ -150,6 +150,8 @@ Fragmented MP4 is the CMAF-style layout, which matters when the output is consum
 
 `SEGMENT_TYPE` only reaches the HLS muxer. With `HLS_ONLY=false` it is ignored, and the encoder logs a warning at startup rather than failing.
 
+**`SEGMENT_TYPE=fmp4` is not carried by the CDN push.** The `OUTPUT_URL` pull-push path uploads and rewrites media segment URIs only; it has no handling for the fMP4 initialisation segment, so the pushed playlists keep an `#EXT-X-MAP` pointing at this encoder's local origin and the init file is never delivered, leaving the pushed stream undecodable. Use the local `/origin` output for fMP4, or deliver the init segment by another route. The encoder logs a warning at startup when both are set.
+
 ### Program date time
 
 Set `PROGRAM_DATE_TIME=true` to add an `#EXT-X-PROGRAM-DATE-TIME` tag to every segment in the media playlists (ffmpeg's `program_date_time` HLS flag). Each segment then carries the wall-clock time of its first sample, which is what a player needs for a date-based seek, and what downstream tooling needs to correlate a segment with events recorded outside the stream.

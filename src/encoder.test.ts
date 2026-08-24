@@ -355,10 +355,12 @@ describe('encoder util', () => {
     ]);
   });
 
-  test('the fmp4 init template is expandable per variant, which ffmpeg requires', () => {
-    // -var_stream_map gives every rendition its own init segment, and ffmpeg
-    // rejects an init filename that cannot be expanded per variant. This is the
-    // regression guard for someone "simplifying" it to init.mp4.
+  test('the fmp4 init template expands per variant', () => {
+    // Every rendition needs its own init segment under -var_stream_map. ffmpeg
+    // will insert a variant suffix on its own if the template lacks one, so
+    // this does not guard against a muxer error; it guards against someone
+    // "simplifying" the template to a single shared init.mp4 and leaving the
+    // per-variant naming to an unpinned ffmpeg's discretion.
     expect(FMP4_INIT_FILENAME).toContain('%v');
   });
 

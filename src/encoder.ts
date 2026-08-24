@@ -86,9 +86,14 @@ export const DEFAULT_SEGMENT_TYPE: SegmentType = 'mpegts';
 
 // Name template for the fMP4 initialisation segment, resolved by ffmpeg
 // relative to the media playlist directory and referenced from the playlist as
-// #EXT-X-MAP. The %v is mandatory rather than cosmetic: with -var_stream_map
-// each rendition needs its own init segment, and ffmpeg rejects an init
-// template that cannot be expanded per variant.
+// #EXT-X-MAP. With -var_stream_map every rendition needs its OWN init segment,
+// since each carries that rendition's moov. The %v is explicit rather than
+// relied upon: ffmpeg does insert a variant suffix itself when the template
+// lacks one (verified on 8.1.1, which produced init_0.mp4 and init_1.mp4 from a
+// plain 'init.mp4'), but the container image installs an unpinned ffmpeg, so
+// spelling the expansion out keeps the filenames ours rather than a muxer
+// implementation detail, and makes a later "simplification" to one shared
+// init.mp4 a visible change instead of a silent per-variant regression.
 export const FMP4_INIT_FILENAME = 'init_%v.mp4';
 
 // Default ABR ladder used when the LADDER env var is unset: two video rungs plus

@@ -47,6 +47,21 @@ if (!hlsOnly && subtitles.length > 0) {
   );
 }
 
+// The CDN-push path (OUTPUT_URL -> hls-pull-push) uploads and rewrites media
+// segment URIs only: it has no handling for the fMP4 initialisation segment, so
+// the pushed playlists keep an #EXT-X-MAP pointing at this encoder's local
+// origin and the init file is never delivered. Under fmp4 the pushed stream is
+// therefore undecodable. Warn loudly rather than fail, since an operator may be
+// delivering the init segment by another route, but never leave it silent.
+if (segmentType === 'fmp4' && process.env.OUTPUT_URL) {
+  Log().warn(
+    'SEGMENT_TYPE=fmp4 is set together with OUTPUT_URL: the CDN push does ' +
+      'not carry the fMP4 initialisation segment, so the pushed stream will ' +
+      'reference an EXT-X-MAP that the destination cannot fetch. Use the ' +
+      'local origin for fMP4, or deliver the init segment separately'
+  );
+}
+
 // SEGMENT_TYPE only reaches the hls muxer, so it is inert on the non-HLS path.
 // Warning rather than failing keeps a mixed-config deployment starting, exactly
 // as the SUBTITLE_URL case above does.
