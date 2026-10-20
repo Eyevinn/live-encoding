@@ -505,7 +505,11 @@ export class Encoder {
     return {
       rtmpPort: this.rtmpPort,
       streamKey: this.streamKey,
-      outputUrl: this.opts.outputUrl?.toString(),
+      // Echoed in the POST /api/encoder response: strip basic-auth userinfo
+      // and query secrets so OUTPUT_URL credentials never leave the process.
+      outputUrl: this.opts.outputUrl
+        ? redactSecrets(this.opts.outputUrl.toString())
+        : undefined,
       playlist: '/origin/hls/index.m3u8',
       status: this.status
     };
