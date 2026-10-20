@@ -51,6 +51,7 @@ Live transcoding to HLS and optionally MPEG-DASH. Provides origin for CDN shield
 | `INPUT_DIAL_TIMEOUT` | Caller-mode dial deadline in seconds. If the source is never reached within this bound the encoder gives up and goes to `error`. A per-request `timeout` overrides it                                                      | `300`                        |
 | `OUTPUT_URL`         | URL to upload media segments and playlists. If not set push to CDN is disabled                                                                                                                                             |                              |
 | `LADDER`             | ABR ladder as a comma-separated list of video rungs, each `<width>x<height>:<bitrate>`, e.g. `1920x1080:5000k,1280x720:2800k,640x360:800k`. An invalid value fails startup. If not set the built-in default ladder is used | `1280x720:4M,640x360:3M`     |
+| `ABR_PRESET`         | Named ABR ladder shorthand: `720p`, `720p_360p` (the built-in default ladder) or `1080p_720p_360p`. Mutually exclusive with `LADDER`: setting both fails startup. An unknown value fails startup                           | built-in default ladder      |
 | `FRAMERATE`          | Output framerate as a positive integer (typically `25`, `30`, `50` or `60`). Each rung is converted to this rate and the GOP is set to 2 x framerate. If not set the output follows the input framerate                    | input framerate              |
 | `RATE_CONTROL`       | Per-rung H.264 rate-control mode: `cbr` (strict constant bitrate) or `capped-vbr` (VBV-capped variable bitrate). An invalid value fails startup                                                                            | `cbr`                        |
 | `MAXRATE_FACTOR`     | Positive float. Under `capped-vbr` the per-rung `-maxrate` is `round(MAXRATE_FACTOR x target bitrate)`. Ignored under `cbr`                                                                                                | `1.15`                       |
@@ -89,6 +90,22 @@ Set `LADDER` to a comma-separated list of video rungs, each `<width>x<height>:<b
 ```
 
 The bitrate of each rung is passed to ffmpeg verbatim, so an integer with an optional `k`/`M`/`G` suffix is accepted (`5000k`, `5M`, `5000000`). An invalid `LADDER` value fails startup with an error naming the offending entry: the encoder never silently falls back to the default ladder, because an operator who set `LADDER` expects that exact ladder and a quietly-different stream is harder to diagnose than a startup crash. Audio is not configurable through `LADDER` today; the default stereo AAC rung is always appended.
+
+For the common cases, set `ABR_PRESET` instead of writing a ladder by hand. Each preset is a named `LADDER` string and goes through exactly the same validation:
+
+| `ABR_PRESET`      | Equivalent `LADDER`                    |
+| ----------------- | -------------------------------------- |
+| `720p`            | `1280x720:4M`                          |
+| `720p_360p`       | `1280x720:4M,640x360:3M` (the default) |
+| `1080p_720p_360p` | `1920x1080:6M,1280x720:4M,640x360:3M`  |
+
+```
+% ORIGIN_DIR=/data \
+  ABR_PRESET=1080p_720p_360p \
+  npm start
+```
+
+`ABR_PRESET` and `LADDER` are mutually exclusive: setting both fails startup rather than letting one silently win. An empty value counts as unset for both. An unknown preset fails startup with an error listing the accepted values.
 
 Set `FRAMERATE` to a positive integer to convert every rung to that framerate:
 

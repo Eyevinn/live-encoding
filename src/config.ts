@@ -13,6 +13,39 @@ export function boolFromEnv(value: string | undefined): boolean {
   return value ? value.toLowerCase() === 'true' || value === '1' : false;
 }
 
+// Named ABR ladder presets selectable through the ABR_PRESET env var. Each
+// preset is just a LADDER string, expanded through parseLadder so presets and
+// free-form ladders share one validation path. The rung bitrates match
+// DEFAULT_LADDER, so `720p_360p` is exactly the built-in default ladder.
+export const ABR_PRESETS = {
+  '720p': '1280x720:4M',
+  '720p_360p': '1280x720:4M,640x360:3M',
+  '1080p_720p_360p': '1920x1080:6M,1280x720:4M,640x360:3M'
+} as const;
+
+export type AbrPreset = keyof typeof ABR_PRESETS;
+
+// Parse the optional ABR_PRESET env var. Unset (or empty-or-whitespace, which
+// container platforms deliver for an unset optional key) returns undefined.
+// Matching is case-insensitive; an unknown value FAILS FAST naming the
+// accepted presets, for the same reason as parseLadder.
+export function parseAbrPreset(
+  env: Record<string, string | undefined> = process.env
+): AbrPreset | undefined {
+  const raw = env.ABR_PRESET;
+  if (raw === undefined || raw.trim() === '') {
+    return undefined;
+  }
+  const value = raw.trim().toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(ABR_PRESETS, value)) {
+    return value as AbrPreset;
+  }
+  const accepted = Object.keys(ABR_PRESETS)
+    .map((name) => `'${name}'`)
+    .join(', ');
+  throw new Error(`Invalid ABR_PRESET '${raw}': must be one of ${accepted}`);
+}
+
 // Parse the optional ABR ladder from the LADDER env var. The format is a
 // comma-separated list of video rungs, each `<width>x<height>:<bitrate>`, e.g.
 //   LADDER=1920x1080:5000k,1280x720:2800k,640x360:800k
@@ -33,9 +66,25 @@ export function boolFromEnv(value: string | undefined): boolean {
 //
 // Audio is not configurable through LADDER today; the default stereo AAC rung
 // from DEFAULT_LADDER is appended so the ladder stays a complete A/V ladder.
+//
+// ABR_PRESET is a named convenience layer on top of LADDER: each preset expands
+// to a LADDER string (see ABR_PRESETS) and goes through the same parsing and
+// validation below. Setting both LADDER and ABR_PRESET is ambiguous and FAILS
+// FAST rather than letting one silently win.
 export function parseLadder(
   env: Record<string, string | undefined> = process.env
 ): BitrateLadderStep[] | undefined {
+  const preset = parseAbrPreset(env);
+  const ladderSet = env.LADDER !== undefined && env.LADDER.trim() !== '';
+  if (preset !== undefined) {
+    if (ladderSet) {
+      throw new Error(
+        'Both LADDER and ABR_PRESET are set: they are mutually exclusive, ' +
+          'set only one of them (ABR_PRESET is a named shorthand for a LADDER)'
+      );
+    }
+    return parseLadder({ LADDER: ABR_PRESETS[preset] });
+  }
   const raw = env.LADDER;
   if (raw === undefined || raw.trim() === '') {
     return undefined;

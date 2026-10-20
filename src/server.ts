@@ -3,6 +3,7 @@ import api from './api';
 import { Encoder } from './encoder';
 import {
   boolFromEnv,
+  parseAbrPreset,
   parseBufsizeFactor,
   parseFramerate,
   parseLadder,
@@ -29,7 +30,12 @@ const hlsOnly = process.env.HLS_ONLY
   : true;
 
 const subtitles = parseSubtitles();
+// parseLadder also expands ABR_PRESET (and rejects LADDER + ABR_PRESET together).
 const ladder = parseLadder();
+const abrPreset = parseAbrPreset();
+if (abrPreset !== undefined) {
+  Log().info(`Using ABR_PRESET '${abrPreset}'`);
+}
 const framerate = parseFramerate();
 const rateControl = {
   mode: parseRateControl(),
