@@ -6,6 +6,7 @@ import {
   EncoderStartResponse,
   EncoderStatusResponse
 } from '../model';
+import { sanitizeLogArg } from '../utils/redact';
 
 export interface RouteEncoderOpts {
   encoder: Encoder;
@@ -19,7 +20,7 @@ const encoder: FastifyPluginCallback<RouteEncoderOpts> = (
   const encoder = opts.encoder;
 
   fastify.setErrorHandler((error, request, reply) => {
-    reply.code(500).send({ reason: error.message });
+    reply.code(500).send({ reason: sanitizeLogArg(error.message) });
   });
 
   fastify.get<{
