@@ -12,8 +12,11 @@ import {
   Encoder,
   FMP4_INIT_FILENAME_MULTI,
   FMP4_INIT_FILENAME_SINGLE,
+  LISTEN_FAST_EXIT_WINDOW_MS,
+  LISTEN_MAX_FAST_EXITS,
   SubtitleTrack,
   bitrateToBps,
+  ffmpegLogLevel,
   finalizeSubtitleMasterFile,
   generateFilterComplex,
   generateInput,
@@ -234,7 +237,12 @@ describe('encoder util', () => {
     expect(input).toEqual([
       '-y',
       '-loglevel',
-      'error',
+      'level+info',
+      '-nostats',
+      '-probesize',
+      '50000000',
+      '-analyzeduration',
+      '20000000',
       '-listen',
       '1',
       '-i',
@@ -883,6 +891,265 @@ describe('encoder SRT caller dial lifecycle', () => {
   });
 });
 
+describe('ffmpegLogLevel', () => {
+  test('routes level-prefixed lines by their ffmpeg level', () => {
+    expect(
+      ffmpegLogLevel(
+        '[rtmp @ 0x61a5] [error] RTMP protocol version mismatch',
+        false
+      )
+    ).toBe('error');
+    expect(ffmpegLogLevel('[fatal] boom', false)).toBe('error');
+    expect(ffmpegLogLevel('[flv @ 0x1] [warning] late packet', true)).toBe(
+      'warn'
+    );
+    expect(ffmpegLogLevel('[verbose] probing', false)).toBe('debug');
+  });
+
+  test('logs info lines at info until running, then at debug', () => {
+    const line = "[hls @ 0x1] [info] Opening 'media_0_1.ts' for writing";
+    expect(ffmpegLogLevel(line, false)).toBe('info');
+    expect(ffmpegLogLevel(line, true)).toBe('debug');
+    expect(ffmpegLogLevel('[info] Input #0, flv, from ...', false)).toBe(
+      'info'
+    );
+  });
+
+  test('logs the repeat-suppression notice at debug', () => {
+    expect(ffmpegLogLevel('    Last message repeated 3 times', false)).toBe(
+      'debug'
+    );
+  });
+
+  test('keeps unprefixed lines (caller mode, -loglevel error) at error', () => {
+    expect(
+      ffmpegLogLevel('Connection to srt://source:9000 failed: I/O error', true)
+    ).toBe('error');
+  });
+});
+
+describe('encoder RTMP listen-mode re-listen', () => {
+  // Same deterministic fs stubbing as the SRT caller lifecycle tests. The HLS
+  // index is absent unless a test flips hlsIndexPresent.
+  let hlsIndexPresent = false;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    spawnedProcs.length = 0;
+    hlsIndexPresent = false;
+    mockedSpawn.mockReset();
+    mockedSpawn.mockImplementation(() => makeProc());
+    (fs.existsSync as jest.Mock).mockReturnValue(true);
+    (fsPromises.mkdir as jest.Mock).mockResolvedValue(undefined);
+    (fsPromises.rm as jest.Mock).mockResolvedValue(undefined);
+    (fsPromises.access as jest.Mock).mockImplementation(() =>
+      hlsIndexPresent
+        ? Promise.resolve(undefined)
+        : Promise.reject(new Error('ENOENT'))
+    );
+  });
+
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+    (fs.existsSync as jest.Mock).mockImplementation(realFs.existsSync);
+    (fsPromises.mkdir as jest.Mock).mockImplementation(realFsPromises.mkdir);
+    (fsPromises.rm as jest.Mock).mockImplementation(realFsPromises.rm);
+    (fsPromises.access as jest.Mock).mockImplementation(realFsPromises.access);
+  });
+
+  test.each([
+    [234, 'no video stream found during probing'],
+    [251, 'RTMP handshake rejected a non-RTMP connection']
+  ])('re-listens after ffmpeg exits with code %d (%s)', async (code) => {
+    const encoder = buildEncoder('/media', {});
+    await encoder.start({});
+    expect(mockedSpawn).toHaveBeenCalledTimes(1);
+
+    spawnedProcs[0].emit('exit', code);
+    await jest.advanceTimersByTimeAsync(5000);
+
+    expect(mockedSpawn).toHaveBeenCalledTimes(2);
+    expect(mockedSpawn.mock.calls[1][1]).toEqual(mockedSpawn.mock.calls[0][1]);
+    expect(await encoder.getStatus()).toBe('starting');
+  });
+
+  test('re-listens after a publisher disconnects from a running encode', async () => {
+    const encoder = buildEncoder('/media', {});
+    await encoder.start({});
+    hlsIndexPresent = true;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('running');
+
+    hlsIndexPresent = false;
+    spawnedProcs[0].emit('exit', 1);
+    await jest.advanceTimersByTimeAsync(5000);
+
+    expect(mockedSpawn).toHaveBeenCalledTimes(2);
+    expect(await encoder.getStatus()).toBe('starting');
+    expect(encoder.getOriginPlaylist()).toBeUndefined();
+  });
+
+  test(`lands in error after ${LISTEN_MAX_FAST_EXITS} fast exits in a row`, async () => {
+    // Every listen attempt dies immediately (e.g. port already bound).
+    mockedSpawn.mockImplementation(() => makeProc(true));
+    const encoder = buildEncoder('/media', {});
+    await encoder.start({});
+
+    await jest.advanceTimersByTimeAsync(5000 * (LISTEN_MAX_FAST_EXITS - 1));
+    expect(await encoder.getStatus()).toBe('starting');
+    expect(mockedSpawn).toHaveBeenCalledTimes(LISTEN_MAX_FAST_EXITS);
+
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('error');
+
+    // No further respawn once the guard has tripped.
+    await jest.advanceTimersByTimeAsync(5000 * 5);
+    expect(mockedSpawn).toHaveBeenCalledTimes(LISTEN_MAX_FAST_EXITS);
+  });
+
+  test('a slow exit resets the fast-exit count', async () => {
+    const encoder = buildEncoder('/media', {});
+    await encoder.start({});
+
+    // LISTEN_MAX_FAST_EXITS - 1 fast exits, one short of the guard.
+    for (let i = 0; i < LISTEN_MAX_FAST_EXITS - 1; i++) {
+      spawnedProcs[spawnedProcs.length - 1].emit('exit', 234);
+      await jest.advanceTimersByTimeAsync(5000);
+    }
+    expect(mockedSpawn).toHaveBeenCalledTimes(LISTEN_MAX_FAST_EXITS);
+
+    // The next process listens past the fast-exit window before failing.
+    await jest.advanceTimersByTimeAsync(LISTEN_FAST_EXIT_WINDOW_MS + 5000);
+    spawnedProcs[spawnedProcs.length - 1].emit('exit', 251);
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('starting');
+
+    // So a further fast exit does not trip the guard.
+    spawnedProcs[spawnedProcs.length - 1].emit('exit', 234);
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('starting');
+    expect(mockedSpawn).toHaveBeenCalledTimes(LISTEN_MAX_FAST_EXITS + 2);
+  });
+
+  test('reaching running resets the fast-exit count', async () => {
+    const encoder = buildEncoder('/media', {});
+    await encoder.start({});
+
+    for (let i = 0; i < LISTEN_MAX_FAST_EXITS - 1; i++) {
+      spawnedProcs[spawnedProcs.length - 1].emit('exit', 234);
+      await jest.advanceTimersByTimeAsync(5000);
+    }
+    hlsIndexPresent = true;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('running');
+
+    hlsIndexPresent = false;
+    spawnedProcs[spawnedProcs.length - 1].emit('exit', 1);
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('starting');
+  });
+
+  test('stops the pull-push fetcher on disconnect and starts a fresh one on the next running', async () => {
+    const { HLSPullPush } = jest.requireMock('@eyevinn/hls-pull-push');
+    const encoder = new Encoder(
+      'ffmpeg',
+      'packager',
+      1935,
+      'stream',
+      '/media',
+      {
+        hlsOnly: true,
+        outputUrl: new URL('https://ingest.example.com/channel/index.m3u8'),
+        originPort: 8080
+      }
+    );
+    const pullPush =
+      HLSPullPush.mock.results[HLSPullPush.mock.results.length - 1].value;
+    pullPush.startFetcher.mockClear();
+    pullPush.stopFetcher.mockClear();
+
+    await encoder.start({});
+    hlsIndexPresent = true;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('running');
+    expect(pullPush.startFetcher).toHaveBeenCalledTimes(1);
+
+    // Publisher disconnects: fetcher is stopped before the re-listen.
+    hlsIndexPresent = false;
+    spawnedProcs[0].emit('exit', 1);
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(pullPush.stopFetcher).toHaveBeenCalledTimes(1);
+    expect(pullPush.stopFetcher).toHaveBeenCalledWith('fetcher-1');
+    expect(mockedSpawn).toHaveBeenCalledTimes(2);
+
+    // No fetcher while nobody is publishing.
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(pullPush.startFetcher).toHaveBeenCalledTimes(1);
+
+    // A new publish reaches running: a fresh fetcher is started.
+    hlsIndexPresent = true;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('running');
+    expect(pullPush.startFetcher).toHaveBeenCalledTimes(2);
+  });
+
+  test('the start timeout counts from the re-listen after a disconnect', async () => {
+    const encoder = buildEncoder('/media', {});
+    await encoder.start({ timeout: 10 });
+    hlsIndexPresent = true;
+    await jest.advanceTimersByTimeAsync(5000); // t=5 running
+    expect(await encoder.getStatus()).toBe('running');
+
+    hlsIndexPresent = false;
+    spawnedProcs[0].emit('exit', 1);
+    await jest.advanceTimersByTimeAsync(5000); // t=10 re-listen, clock resets
+    // t=15 and t=20 are within 10 s of the re-listen; without the reset the
+    // encoder would already have stopped here (15 s since the first start).
+    await jest.advanceTimersByTimeAsync(10000);
+    expect(await encoder.getStatus()).toBe('starting');
+    expect(mockedSpawn).toHaveBeenCalledTimes(2);
+  });
+
+  test('an intentional stop does not re-listen', async () => {
+    const encoder = buildEncoder('/media', {});
+    await encoder.start({});
+    // stop() polls for the kill with a 1 s timer, so drive it via fake time.
+    const stopped = encoder.stop();
+    await jest.advanceTimersByTimeAsync(5000 * 3);
+    await stopped;
+
+    expect(await encoder.getStatus()).toBe('stopped');
+    expect(mockedSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  test('routes listen-mode ffmpeg stderr by level and splits lines', async () => {
+    const errorSpy = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    const infoSpy = jest
+      .spyOn(console, 'info')
+      .mockImplementation(() => undefined);
+    const encoder = buildEncoder('/media', {});
+    await encoder.start({});
+
+    const proc = spawnedProcs[0] as EventEmitter & { stderr: EventEmitter };
+    proc.stderr.emit(
+      'data',
+      '[info] Input #0, flv, from rtmp://0.0.0.0:1935/live/stream:\n' +
+        '[rtmp @ 0x1] [error] RTMP protocol version mismatch\n'
+    );
+
+    const errors = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    const infos = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(errors).toContain('RTMP protocol version mismatch');
+    expect(errors).not.toContain('Input #0');
+    expect(infos).toContain('Input #0, flv');
+    errorSpy.mockRestore();
+    infoSpy.mockRestore();
+  });
+});
+
 describe('encoder clears stale HLS output before starting', () => {
   let mediaDir: string;
 
@@ -961,7 +1228,12 @@ describe('subtitle passthrough', () => {
     expect(generateInput(1935, 'stream', undefined, subtitleTracks)).toEqual([
       '-y',
       '-loglevel',
-      'error',
+      'level+info',
+      '-nostats',
+      '-probesize',
+      '50000000',
+      '-analyzeduration',
+      '20000000',
       '-listen',
       '1',
       '-i',

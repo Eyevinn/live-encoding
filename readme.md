@@ -216,6 +216,8 @@ If status is `starting` you can start pushing to the RTMP address `rtmp://<your-
 
 When status is `running` you can play the HLS from `http://localhost:8000/origin/hls/index.m3u8`
 
+If a publish fails or the publisher disconnects, the encoder goes back to `starting` and listens for a new publish on the same address, without a new start request. If ffmpeg exits 10 times in a row within 30 seconds of listening without the encoder reaching `running` (for example the RTMP port is already in use), it gives up and goes to `error`. The listener probes the input for up to 20 seconds / 50 MB, so a publisher that sends its first video well after its audio is still detected, and logs the input track list of every publish at info level.
+
 Top stop the encoder:
 
 ```
