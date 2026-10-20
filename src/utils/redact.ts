@@ -14,10 +14,24 @@ const REDACTED = '<redacted>';
 // Redact secrets that may appear in a value that is logged or placed into an
 // error message: basic-auth userinfo embedded in a URL (user:pass@host) and URL
 // query strings (which may carry a passphrase or a signed-URL token).
+//
+// Both patterns run in linear time. The scheme may only start at the beginning
+// of a run of scheme characters (lookbehind), so a long run such as 'aaaa...'
+// is scanned once rather than once per position. The query pattern always
+// succeeds once it has seen `scheme://` (the `?...` part is optional and
+// checked in the replacer), so a URL without a query string is consumed
+// instead of being rescanned to the end of the line from every later offset.
+// The scheme run may start with a digit or '+.-': this only widens what is
+// treated as a URL for redaction purposes.
+const URL_USERINFO_RE = /(?<![a-z0-9+.-])([a-z0-9+.-]+:\/\/)[^/@\s]*@/gi;
+const URL_QUERY_RE = /(?<![a-z0-9+.-])([a-z0-9+.-]+:\/\/[^\s?]*)(\?[^\s]*)?/gi;
+
 export function redactSecrets(value: string): string {
   return value
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi, '$1<redacted>@')
-    .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s?]*)\?[^\s]*/gi, '$1?<redacted>');
+    .replace(URL_USERINFO_RE, '$1<redacted>@')
+    .replace(URL_QUERY_RE, (match: string, prefix: string, query?: string) =>
+      query === undefined ? match : `${prefix}?<redacted>`
+    );
 }
 
 // Redact credential-looking key/value tokens: `username: x`, `password=x`,
@@ -45,8 +59,12 @@ export function redactCredentialTokens(value: string): string {
         /\b(response|nonce|cnonce|opaque)=(\\?)"(?:[^"\\]|\\(?!"))*\\?"/gi,
         `$1=$2"${REDACTED}$2"`
       )
+      // Credential key/value tokens. The quoted alternatives are escape-aware
+      // (same form as the Authorization patterns above) so that a JSON-escaped
+      // \" or a backslash-escaped \' inside the value does not end the match
+      // early and leak the rest of the secret.
       .replace(
-        /\b(username|password|passwd|user|pass)\b(["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&)}\]]+)/gi,
+        /\b(username|password|passwd|user|pass)\b(["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s,;&)}\]]+)/gi,
         `$1$2${REDACTED}`
       )
   );

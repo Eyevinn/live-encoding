@@ -39,6 +39,18 @@ describe('PullPushLogger', () => {
     }
   );
 
+  test('does not leak the tail of a password containing a quote', () => {
+    new PullPushLogger().error({
+      message: 'Request failed',
+      config: { auth: { username: 'svc', password: 'ab"cdLEAKEDTAIL' } }
+    });
+    new PullPushLogger().error("user: 'it\\'sLEAK'");
+    const out = output();
+    expect(out).not.toContain('LEAKEDTAIL');
+    expect(out).not.toContain('sLEAK');
+    expect(out).toContain('Request failed');
+  });
+
   test('passes exactly one string argument to the logger', () => {
     new PullPushLogger().verbose({ a: 1 });
     new PullPushLogger().error(new Error('boom'));

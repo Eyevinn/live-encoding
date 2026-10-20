@@ -19,6 +19,26 @@ describe('redactSecrets', () => {
     );
     expect(redactSecrets('https://u:p@h/x')).toBe('https://<redacted>@h/x');
   });
+
+  test('leaves URLs without userinfo or query untouched', () => {
+    const s = 'see rtmp://0.0.0.0:1935/live/stream and a://b/c then x';
+    expect(redactSecrets(s)).toBe(s);
+    expect(redactSecrets('go 1http://u:p@h/x?q=1')).toBe(
+      'go 1http://<redacted>@h/x?<redacted>'
+    );
+  });
+
+  test.each([
+    ['a://', 'a://'.repeat(20000)],
+    ['letters', 'a'.repeat(80000)],
+    ['scheme-like', 'a:'.repeat(40000)],
+    ['userinfo-like', 'a://b'.repeat(16000) + '@']
+  ])('runs in linear time on adversarial input (%s)', (_name, input) => {
+    const start = Date.now();
+    redactSecrets(input);
+    sanitizeLogArg({ input });
+    expect(Date.now() - start).toBeLessThan(500);
+  });
 });
 
 describe('redactCredentialTokens', () => {
@@ -61,6 +81,18 @@ describe('redactCredentialTokens', () => {
     expect(out).toBe(
       'realm="r", nonce="<redacted>", cnonce="<redacted>", ' +
         'opaque="<redacted>", response="<redacted>"'
+    );
+  });
+
+  test('does not end a quoted value at an escaped quote', () => {
+    expect(
+      redactCredentialTokens('{"password":"ab\\"cdLEAKEDTAIL","x":1}')
+    ).toBe('{"password":<redacted>,"x":1}');
+    expect(redactCredentialTokens("user: 'it\\'sLEAK' next")).toBe(
+      'user: <redacted> next'
+    );
+    expect(redactCredentialTokens('{"password":"ab\\\\","x":1}')).toBe(
+      '{"password":<redacted>,"x":1}'
     );
   });
 
@@ -108,6 +140,16 @@ describe('sanitizeLogArg', () => {
     const out = sanitizeLogArg({ big: 'x'.repeat(MAX_LOG_ARG_LENGTH * 2) });
     expect(out.length).toBeLessThan(MAX_LOG_ARG_LENGTH + 32);
     expect(out).toMatch(/\[truncated]$/);
+  });
+
+  test('redacts a password containing a quote in a serialised object', () => {
+    const out = sanitizeLogArg({
+      message: 'Request failed',
+      config: { auth: { username: 'svc', password: 'ab"cdLEAKEDTAIL' } }
+    });
+    expect(out).not.toContain('LEAKEDTAIL');
+    expect(out).not.toContain('svc');
+    expect(out).toContain('Request failed');
   });
 
   test('uses only name, message and stack of an Error', () => {
