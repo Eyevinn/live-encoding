@@ -434,6 +434,11 @@ export class Encoder {
                 listenWaitStartTs = Date.now();
               }
               this.status = 'starting';
+              // cleanup() deletes /hls, which would make the pull-push
+              // fetcher end the downstream output (ENDLIST) and then replay
+              // stale state against the restarted media sequence. Stop it so
+              // the next transition to 'running' starts a fresh fetcher.
+              await this.stopPullPush();
               await this.cleanup();
               // stop() may have been requested while cleanup was pending.
               if (!this.wantsToStop) {

@@ -1050,6 +1050,67 @@ describe('encoder RTMP listen-mode re-listen', () => {
     expect(await encoder.getStatus()).toBe('starting');
   });
 
+  test('stops the pull-push fetcher on disconnect and starts a fresh one on the next running', async () => {
+    const { HLSPullPush } = jest.requireMock('@eyevinn/hls-pull-push');
+    const encoder = new Encoder(
+      'ffmpeg',
+      'packager',
+      1935,
+      'stream',
+      '/media',
+      {
+        hlsOnly: true,
+        outputUrl: new URL('https://ingest.example.com/channel/index.m3u8'),
+        originPort: 8080
+      }
+    );
+    const pullPush =
+      HLSPullPush.mock.results[HLSPullPush.mock.results.length - 1].value;
+    pullPush.startFetcher.mockClear();
+    pullPush.stopFetcher.mockClear();
+
+    await encoder.start({});
+    hlsIndexPresent = true;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('running');
+    expect(pullPush.startFetcher).toHaveBeenCalledTimes(1);
+
+    // Publisher disconnects: fetcher is stopped before the re-listen.
+    hlsIndexPresent = false;
+    spawnedProcs[0].emit('exit', 1);
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(pullPush.stopFetcher).toHaveBeenCalledTimes(1);
+    expect(pullPush.stopFetcher).toHaveBeenCalledWith('fetcher-1');
+    expect(mockedSpawn).toHaveBeenCalledTimes(2);
+
+    // No fetcher while nobody is publishing.
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(pullPush.startFetcher).toHaveBeenCalledTimes(1);
+
+    // A new publish reaches running: a fresh fetcher is started.
+    hlsIndexPresent = true;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await encoder.getStatus()).toBe('running');
+    expect(pullPush.startFetcher).toHaveBeenCalledTimes(2);
+  });
+
+  test('the start timeout counts from the re-listen after a disconnect', async () => {
+    const encoder = buildEncoder('/media', {});
+    await encoder.start({ timeout: 10 });
+    hlsIndexPresent = true;
+    await jest.advanceTimersByTimeAsync(5000); // t=5 running
+    expect(await encoder.getStatus()).toBe('running');
+
+    hlsIndexPresent = false;
+    spawnedProcs[0].emit('exit', 1);
+    await jest.advanceTimersByTimeAsync(5000); // t=10 re-listen, clock resets
+    // t=15 and t=20 are within 10 s of the re-listen; without the reset the
+    // encoder would already have stopped here (15 s since the first start).
+    await jest.advanceTimersByTimeAsync(10000);
+    expect(await encoder.getStatus()).toBe('starting');
+    expect(mockedSpawn).toHaveBeenCalledTimes(2);
+  });
+
   test('an intentional stop does not re-listen', async () => {
     const encoder = buildEncoder('/media', {});
     await encoder.start({});
