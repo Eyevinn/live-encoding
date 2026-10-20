@@ -18,6 +18,10 @@ import {
 import { existsSync } from 'fs';
 import { HLSPullPush, MediaPackageOutput } from '@eyevinn/hls-pull-push';
 import { PullPushLogger } from './utils/pull_push_logger';
+import { redactSecrets } from './utils/redact';
+
+// Re-exported for existing importers of encoder.ts.
+export { redactSecrets };
 
 // Default upper bound (seconds) on how long an SRT caller keeps re-dialing an
 // input source that is not up yet. Overridable per start request via the
@@ -89,15 +93,6 @@ const SUBTITLE_GROUP_ID = 'subs';
 // -rw_timeout). Without it a stalled subtitle server would pin the encoder in
 // 'starting' forever with no output once the input source connects.
 const SUBTITLE_RW_TIMEOUT_US = 15_000_000;
-
-// Redact secrets that may appear in a value that is logged or placed into an
-// error message: basic-auth userinfo embedded in a URL (user:pass@host) and URL
-// query strings (which may carry a passphrase or a signed-URL token).
-export function redactSecrets(value: string): string {
-  return value
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi, '$1<redacted>@')
-    .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s?]*)\?[^\s]*/gi, '$1?<redacted>');
-}
 
 export type BitrateLadderStep = {
   mediaType: 'video' | 'audio';
@@ -298,7 +293,12 @@ export class Encoder {
         this.opts.outputUrl.protocol == 'https:' ||
         this.opts.outputUrl.protocol == 'http:'
       ) {
-        this.pullPush = new HLSPullPush(new PullPushLogger());
+        this.pullPush = new HLSPullPush(
+          new PullPushLogger([
+            this.opts.outputUrl.username,
+            this.opts.outputUrl.password
+          ])
+        );
       } else {
         throw new Error(`Unsupported protocol ${this.opts.outputUrl.protocol}`);
       }
@@ -505,7 +505,11 @@ export class Encoder {
     return {
       rtmpPort: this.rtmpPort,
       streamKey: this.streamKey,
-      outputUrl: this.opts.outputUrl?.toString(),
+      // Echoed in the POST /api/encoder response: strip basic-auth userinfo
+      // and query secrets so OUTPUT_URL credentials never leave the process.
+      outputUrl: this.opts.outputUrl
+        ? redactSecrets(this.opts.outputUrl.toString())
+        : undefined,
       playlist: '/origin/hls/index.m3u8',
       status: this.status
     };

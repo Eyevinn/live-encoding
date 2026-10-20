@@ -8,6 +8,7 @@ import {
   parseFramerate,
   parseLadder,
   parseMaxrateFactor,
+  parseOutputUrl,
   parseRateControl,
   parseSegmentDuration,
   parseSegmentType,
@@ -93,7 +94,7 @@ if (segmentDuration !== undefined && framerate && segmentDuration % 2 !== 0) {
 const encoderOpts = {
   hlsOnly,
   outputUrl: process.env.OUTPUT_URL
-    ? new URL(process.env.OUTPUT_URL)
+    ? parseOutputUrl(process.env.OUTPUT_URL)
     : undefined,
   originPort: PORT,
   inputUrl: process.env.INPUT_URL || undefined,

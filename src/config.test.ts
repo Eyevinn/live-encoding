@@ -6,6 +6,7 @@ import {
   parseFramerate,
   parseLadder,
   parseMaxrateFactor,
+  parseOutputUrl,
   parseRateControl,
   parseSegmentDuration,
   parseSegmentType,
@@ -432,5 +433,24 @@ describe('parseLadder with ABR_PRESET', () => {
     expect(() =>
       parseLadder({ LADDER: '640x360:800k', ABR_PRESET: 'bogus' })
     ).toThrow(/Invalid ABR_PRESET 'bogus'/);
+  });
+});
+
+describe('parseOutputUrl', () => {
+  test('parses a valid URL', () => {
+    const url = parseOutputUrl('https://user:secret@example.com/in/v2/abc');
+    expect(url.hostname).toBe('example.com');
+    expect(url.password).toBe('secret');
+  });
+
+  test('rejects an invalid URL without echoing the value', () => {
+    expect(() => parseOutputUrl('not a url user:s3cr3tpw')).toThrow(
+      'OUTPUT_URL is not a valid URL'
+    );
+    try {
+      parseOutputUrl('not a url user:s3cr3tpw');
+    } catch (err) {
+      expect(String(err)).not.toContain('s3cr3tpw');
+    }
   });
 });

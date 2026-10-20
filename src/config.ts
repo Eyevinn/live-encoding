@@ -318,3 +318,14 @@ export function parseBufsizeFactor(
     DEFAULT_BUFSIZE_FACTOR
   );
 }
+
+// Parse OUTPUT_URL. The value typically embeds ingest credentials
+// (https://user:pass@host/...), so an invalid value is reported without
+// echoing it back into the startup error.
+export function parseOutputUrl(raw: string): URL {
+  try {
+    return new URL(raw);
+  } catch {
+    throw new Error('OUTPUT_URL is not a valid URL');
+  }
+}

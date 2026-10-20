@@ -1094,6 +1094,33 @@ describe('encoder RTMP listen-mode re-listen', () => {
     expect(pullPush.startFetcher).toHaveBeenCalledTimes(2);
   });
 
+  test('start() does not echo OUTPUT_URL credentials in its response', async () => {
+    const encoder = new Encoder(
+      'ffmpeg',
+      'packager',
+      1935,
+      'stream',
+      '/media',
+      {
+        hlsOnly: true,
+        outputUrl: new URL('https://user:pass@host/path?x=y'),
+        originPort: 8080
+      }
+    );
+
+    const response = await encoder.start({});
+
+    expect(response.outputUrl).toBe('https://<redacted>@host/path?<redacted>');
+    expect(response.outputUrl).not.toContain('user');
+    expect(response.outputUrl).not.toContain('pass');
+  });
+
+  test('start() returns no outputUrl when OUTPUT_URL is unset', async () => {
+    const encoder = buildEncoder('/media', {});
+    const response = await encoder.start({});
+    expect(response.outputUrl).toBeUndefined();
+  });
+
   test('the start timeout counts from the re-listen after a disconnect', async () => {
     const encoder = buildEncoder('/media', {});
     await encoder.start({ timeout: 10 });
