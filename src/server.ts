@@ -6,6 +6,7 @@ import {
   parseAbrPreset,
   parseBufsizeFactor,
   parseFramerate,
+  parseHlsOnly,
   parseLadder,
   parseMaxrateFactor,
   parseOutputUrl,
@@ -25,10 +26,7 @@ const mediaDir = process.env.ORIGIN_DIR || '/tmp/media';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8000;
 
-const hlsOnly = process.env.HLS_ONLY
-  ? process.env.HLS_ONLY.toLowerCase() === 'true' ||
-    process.env.HLS_ONLY === '1'
-  : true;
+const hlsOnly = parseHlsOnly();
 
 const subtitles = parseSubtitles();
 // parseLadder also expands ABR_PRESET (and rejects LADDER + ABR_PRESET together).
@@ -47,10 +45,15 @@ const segmentDuration = parseSegmentDuration();
 const segmentType = parseSegmentType();
 const programDateTime = boolFromEnv(process.env.PROGRAM_DATE_TIME);
 
-if (!hlsOnly && subtitles.length > 0) {
+Log().info(`HLS_ONLY resolved to ${hlsOnly}`);
+
+// HLS is the only output the encoder implements, so it is always produced:
+// HLS_ONLY=false adds no other output today. Warn so the setting is not
+// mistaken for one that changes what is written.
+if (!hlsOnly) {
   Log().warn(
-    'SUBTITLE_URL is set but HLS_ONLY is false, subtitles are only carried in ' +
-      'the HLS output and will be discarded'
+    'HLS_ONLY is false but no non-HLS output is implemented, HLS output is ' +
+      'still produced'
   );
 }
 
@@ -66,16 +69,6 @@ if (segmentType === 'fmp4' && process.env.OUTPUT_URL) {
       'not carry the fMP4 initialisation segment, so the pushed stream will ' +
       'reference an EXT-X-MAP that the destination cannot fetch. Use the ' +
       'local origin for fMP4, or deliver the init segment separately'
-  );
-}
-
-// SEGMENT_TYPE only reaches the hls muxer, so it is inert on the non-HLS path.
-// Warning rather than failing keeps a mixed-config deployment starting, exactly
-// as the SUBTITLE_URL case above does.
-if (!hlsOnly && segmentType !== undefined) {
-  Log().warn(
-    `SEGMENT_TYPE is set to '${segmentType}' but HLS_ONLY is false, the ` +
-      'segment container only applies to the HLS output and will be ignored'
   );
 }
 

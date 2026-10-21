@@ -4,6 +4,7 @@ import {
   parseAbrPreset,
   parseBufsizeFactor,
   parseFramerate,
+  parseHlsOnly,
   parseLadder,
   parseMaxrateFactor,
   parseOutputUrl,
@@ -26,6 +27,34 @@ describe('boolFromEnv', () => {
     expect(boolFromEnv('0')).toBe(false);
     expect(boolFromEnv('')).toBe(false);
     expect(boolFromEnv(undefined)).toBe(false);
+  });
+});
+
+describe('parseHlsOnly', () => {
+  test('defaults to true when unset or empty', () => {
+    expect(parseHlsOnly({})).toBe(true);
+    expect(parseHlsOnly({ HLS_ONLY: '' })).toBe(true);
+    expect(parseHlsOnly({ HLS_ONLY: '   ' })).toBe(true);
+  });
+
+  test.each(['true', 'TRUE', 'True', ' true ', '1', 'yes', 'YES', 'on', 'On'])(
+    'parses %p as true',
+    (value) => {
+      expect(parseHlsOnly({ HLS_ONLY: value })).toBe(true);
+    }
+  );
+
+  test.each(['false', 'FALSE', ' False', '0', 'no', 'NO', 'off', 'Off '])(
+    'parses %p as false',
+    (value) => {
+      expect(parseHlsOnly({ HLS_ONLY: value })).toBe(false);
+    }
+  );
+
+  test.each(['maybe', '2', 'truee'])('rejects %p', (value) => {
+    expect(() => parseHlsOnly({ HLS_ONLY: value })).toThrow(
+      `Invalid HLS_ONLY '${value}'`
+    );
   });
 });
 

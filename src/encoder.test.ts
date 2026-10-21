@@ -214,7 +214,7 @@ describe('encoder util', () => {
     const filter = generateFilterComplex(threeRung);
     expect(filter[1].startsWith('[0:v]split=3')).toBe(true);
     // 2) generateOutput maps one variant per video rung in the var_stream_map.
-    const output = generateOutput(true, threeRung, '/data');
+    const output = generateOutput(threeRung, '/data');
     const varStreamMap = output[output.indexOf('-var_stream_map') + 1];
     expect(varStreamMap).toBe('v:0,a:0 v:1,a:1 v:2,a:2');
     // 3) the subtitle-master readiness gate expects one variant per video rung.
@@ -268,7 +268,7 @@ describe('encoder util', () => {
   });
 
   test('can generate outout args', () => {
-    const hlsOnly = generateOutput(true, testLadder, '/data');
+    const hlsOnly = generateOutput(testLadder, '/data');
     expect(hlsOnly).toEqual([
       '-f',
       'hls',
@@ -290,17 +290,39 @@ describe('encoder util', () => {
     ]);
   });
 
+  test('generateOutput always ends in the media playlist output target', () => {
+    const subs: SubtitleTrack[] = [
+      {
+        url: 'https://example.com/en.vtt',
+        language: 'en',
+        name: 'English',
+        default: true
+      }
+    ];
+    const singleRung = testLadder.slice(0, 1).concat(testLadder.slice(-1));
+    const variants: string[][] = [
+      generateOutput(testLadder, '/data'),
+      generateOutput(testLadder, '/data', subs),
+      generateOutput(testLadder, '/data', [], 4, 'fmp4', true),
+      generateOutput(singleRung, '/x')
+    ];
+    for (const args of variants) {
+      expect(args[args.length - 1]).toMatch(/\/hls\/media_%v\.m3u8$/);
+      expect(args[args.indexOf('-f') + 1]).toBe('hls');
+    }
+  });
+
   test('generateOutput defaults -hls_time to the documented 10 seconds', () => {
     expect(DEFAULT_SEGMENT_DURATION).toBe(10);
-    const args = generateOutput(true, testLadder, '/data');
+    const args = generateOutput(testLadder, '/data');
     expect(args[args.indexOf('-hls_time') + 1]).toBe('10');
   });
 
   test('generateOutput passes a configured segment duration to -hls_time', () => {
-    const args = generateOutput(true, testLadder, '/data', [], 4);
+    const args = generateOutput(testLadder, '/data', [], 4);
     expect(args[args.indexOf('-hls_time') + 1]).toBe('4');
     // Only the segment duration changes, the rest of the output args do not.
-    const defaults = generateOutput(true, testLadder, '/data');
+    const defaults = generateOutput(testLadder, '/data');
     expect(args.filter((a) => a !== '4')).toEqual(
       defaults.filter((a) => a !== '10')
     );
@@ -308,13 +330,13 @@ describe('encoder util', () => {
 
   test('generateOutput with an explicit default duration is byte-identical', () => {
     expect(
-      generateOutput(true, testLadder, '/data', [], DEFAULT_SEGMENT_DURATION)
-    ).toEqual(generateOutput(true, testLadder, '/data'));
+      generateOutput(testLadder, '/data', [], DEFAULT_SEGMENT_DURATION)
+    ).toEqual(generateOutput(testLadder, '/data'));
   });
 
   test('generateOutput defaults the segment container to mpegts', () => {
     expect(DEFAULT_SEGMENT_TYPE).toBe('mpegts');
-    const args = generateOutput(true, testLadder, '/data');
+    const args = generateOutput(testLadder, '/data');
     expect(args[args.indexOf('-hls_segment_type') + 1]).toBe('mpegts');
     expect(args).not.toContain('-hls_fmp4_init_filename');
   });
@@ -322,19 +344,17 @@ describe('encoder util', () => {
   test('generateOutput with an explicit mpegts segment type is byte-identical', () => {
     expect(
       generateOutput(
-        true,
         testLadder,
         '/data',
         [],
         DEFAULT_SEGMENT_DURATION,
         DEFAULT_SEGMENT_TYPE
       )
-    ).toEqual(generateOutput(true, testLadder, '/data'));
+    ).toEqual(generateOutput(testLadder, '/data'));
   });
 
   test('generateOutput emits fmp4 segments, an init template and .m4s fragments', () => {
     const args = generateOutput(
-      true,
       testLadder,
       '/data',
       [],
@@ -367,7 +387,6 @@ describe('encoder util', () => {
   test('a multi-rung ladder gets a per-variant init template', () => {
     // Each rendition carries its own moov, so each needs its own init segment.
     const args = generateOutput(
-      true,
       testLadder,
       '/data',
       [],
@@ -390,7 +409,6 @@ describe('encoder util', () => {
       .filter((step) => step.mediaType !== 'video')
       .concat(videoRungs.slice(0, 1));
     const args = generateOutput(
-      true,
       singleRung,
       '/data',
       [],
@@ -406,13 +424,13 @@ describe('encoder util', () => {
   });
 
   test('segment duration and segment type are independent', () => {
-    const args = generateOutput(true, testLadder, '/data', [], 4, 'fmp4');
+    const args = generateOutput(testLadder, '/data', [], 4, 'fmp4');
     expect(args[args.indexOf('-hls_time') + 1]).toBe('4');
     expect(args[args.indexOf('-hls_segment_type') + 1]).toBe('fmp4');
   });
 
   test('generateOutput omits program_date_time by default', () => {
-    const args = generateOutput(true, testLadder, '/data');
+    const args = generateOutput(testLadder, '/data');
     expect(args[args.indexOf('-hls_flags') + 1]).toBe(
       'independent_segments+delete_segments'
     );
@@ -420,7 +438,6 @@ describe('encoder util', () => {
 
   test('generateOutput appends program_date_time to -hls_flags when enabled', () => {
     const args = generateOutput(
-      true,
       testLadder,
       '/data',
       [],
@@ -432,7 +449,7 @@ describe('encoder util', () => {
       'independent_segments+delete_segments+program_date_time'
     );
     // Nothing else moves: the flag string is the only difference.
-    const defaults = generateOutput(true, testLadder, '/data');
+    const defaults = generateOutput(testLadder, '/data');
     expect(
       args.filter(
         (a) => a !== 'independent_segments+delete_segments+program_date_time'
@@ -444,7 +461,6 @@ describe('encoder util', () => {
 
   test('program_date_time applies to mpegts output too, not just fmp4', () => {
     const args = generateOutput(
-      true,
       testLadder,
       '/data',
       [],
@@ -722,6 +738,7 @@ const buildEncoder = (
     inputUrl?: string;
     inputDialTimeoutSec?: number;
     segmentDuration?: number;
+    hlsOnly?: boolean;
   }
 ) =>
   new Encoder('ffmpeg', 'packager', 1935, 'stream', mediaDir, {
@@ -1175,6 +1192,22 @@ describe('encoder RTMP listen-mode re-listen', () => {
     errorSpy.mockRestore();
     infoSpy.mockRestore();
   });
+
+  // #29: with hlsOnly false the spawned command used to end after the audio
+  // encode options with no output target, so ffmpeg failed every publish with
+  // exit 234 ("Filter scale:default has an unconnected output").
+  test.each([true, false])(
+    'spawned ffmpeg command ends in the HLS output target (hlsOnly %s)',
+    async (hlsOnly) => {
+      const encoder = buildEncoder('/media', { hlsOnly });
+      await encoder.start({});
+      expect(mockedSpawn).toHaveBeenCalledTimes(1);
+      const args = mockedSpawn.mock.calls[0][1] as string[];
+      expect(args[args.length - 1]).toBe('/media/hls/media_%v.m3u8');
+      expect(args[args.indexOf('-f') + 1]).toBe('hls');
+      expect(args[args.indexOf('-master_pl_name') + 1]).toBe('index.m3u8');
+    }
+  );
 });
 
 describe('encoder clears stale HLS output before starting', () => {
@@ -1294,7 +1327,7 @@ describe('subtitle passthrough', () => {
   });
 
   test('generateOutput maps the sidecar as input 1 and groups it on the last variant', () => {
-    const args = generateOutput(true, testLadder, '/data', subtitleTracks);
+    const args = generateOutput(testLadder, '/data', subtitleTracks);
     // The sidecar is input index 1 in both RTMP and SRT mode (single primary
     // input), so -map 1:0 resolves to the subtitle in either case.
     expect(args.slice(0, 4)).toEqual(['-map', '1:0', '-c:s', 'webvtt']);
@@ -1305,8 +1338,8 @@ describe('subtitle passthrough', () => {
   });
 
   test('generateOutput is byte-identical to the no-arg form without subtitles', () => {
-    expect(generateOutput(true, testLadder, '/data', [])).toEqual(
-      generateOutput(true, testLadder, '/data')
+    expect(generateOutput(testLadder, '/data', [])).toEqual(
+      generateOutput(testLadder, '/data')
     );
   });
 
