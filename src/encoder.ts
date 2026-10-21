@@ -341,7 +341,6 @@ export class Encoder {
       subtitles
     );
     const outputArgs = generateOutput(
-      this.opts.hlsOnly,
       ladder,
       this.mediaDir,
       subtitles,
@@ -890,8 +889,11 @@ export function generateInput(
   }
   return args;
 }
+// The HLS output is the only output target the encoder implements, so it is
+// always emitted. It must never be conditional: an ffmpeg command whose filter
+// graph has no output fails at startup with exit 234 ("Filter ... has an
+// unconnected output"), which is what HLS_ONLY=false used to produce (#29).
 export function generateOutput(
-  hlsOnly: boolean,
   ladder: BitrateLadderStep[],
   mediaDir: string,
   subtitles: SubtitleTrack[] = [],
@@ -899,76 +901,73 @@ export function generateOutput(
   segmentType: SegmentType = DEFAULT_SEGMENT_TYPE,
   programDateTime = false
 ): string[] {
-  if (hlsOnly) {
-    let varStreamMap = '';
-    const videos = ladder.filter((step) => step.mediaType === 'video');
-    for (let i = 0; i < videos.length; i++) {
-      varStreamMap += `v:${i},a:${i}`;
-      // Attach the subtitle streams to the last video variant only. ffmpeg's
-      // hls muxer crashes if a subtitle group is referenced from more than one
-      // variant, so the reference is broadened to every variant afterwards in
-      // rewriteMasterPlaylist.
-      if (subtitles.length > 0 && i === videos.length - 1) {
-        for (let s = 0; s < subtitles.length; s++) {
-          varStreamMap += `,s:${s}`;
-        }
-        varStreamMap += `,sgroup:${SUBTITLE_GROUP_ID}`;
+  let varStreamMap = '';
+  const videos = ladder.filter((step) => step.mediaType === 'video');
+  for (let i = 0; i < videos.length; i++) {
+    varStreamMap += `v:${i},a:${i}`;
+    // Attach the subtitle streams to the last video variant only. ffmpeg's
+    // hls muxer crashes if a subtitle group is referenced from more than one
+    // variant, so the reference is broadened to every variant afterwards in
+    // rewriteMasterPlaylist.
+    if (subtitles.length > 0 && i === videos.length - 1) {
+      for (let s = 0; s < subtitles.length; s++) {
+        varStreamMap += `,s:${s}`;
       }
-      if (i < videos.length - 1) {
-        varStreamMap += ' ';
-      }
+      varStreamMap += `,sgroup:${SUBTITLE_GROUP_ID}`;
     }
-    const subtitleArgs: string[] = [];
-    for (let s = 0; s < subtitles.length; s++) {
-      // Subtitle sidecar inputs follow the primary input, so subtitle s is
-      // ffmpeg input index s + 1.
-      subtitleArgs.push('-map', `${s + 1}:0`);
+    if (i < videos.length - 1) {
+      varStreamMap += ' ';
     }
-    if (subtitles.length > 0) {
-      subtitleArgs.push('-c:s', 'webvtt');
-    }
-    // program_date_time is appended last so the historical flag string is
-    // unchanged when it is off.
-    const hlsFlags = programDateTime
-      ? 'independent_segments+delete_segments+program_date_time'
-      : 'independent_segments+delete_segments';
-    // fMP4 needs two things mpegts does not: an init-segment template, and a
-    // .m4s extension on the fragments. Both are muxer-level, so the rest of the
-    // output arguments are shared.
-    const segmentArgs =
-      segmentType === 'fmp4'
-        ? [
-            '-hls_segment_type',
-            'fmp4',
-            '-hls_fmp4_init_filename',
-            fmp4InitFilename(videos.length),
-            '-hls_segment_filename',
-            `${mediaDir}/hls/media_%v_%02d.m4s`
-          ]
-        : [
-            '-hls_segment_type',
-            'mpegts',
-            '-hls_segment_filename',
-            `${mediaDir}/hls/media_%v_%02d.ts`
-          ];
-    return subtitleArgs.concat([
-      '-f',
-      'hls',
-      '-hls_time',
-      `${segmentDuration}`,
-      '-hls_flags',
-      hlsFlags,
-      ...segmentArgs,
-      '-hls_list_size',
-      '6',
-      '-master_pl_name',
-      'index.m3u8',
-      '-var_stream_map',
-      varStreamMap,
-      `${mediaDir}/hls/media_%v.m3u8`
-    ]);
   }
-  return [];
+  const subtitleArgs: string[] = [];
+  for (let s = 0; s < subtitles.length; s++) {
+    // Subtitle sidecar inputs follow the primary input, so subtitle s is
+    // ffmpeg input index s + 1.
+    subtitleArgs.push('-map', `${s + 1}:0`);
+  }
+  if (subtitles.length > 0) {
+    subtitleArgs.push('-c:s', 'webvtt');
+  }
+  // program_date_time is appended last so the historical flag string is
+  // unchanged when it is off.
+  const hlsFlags = programDateTime
+    ? 'independent_segments+delete_segments+program_date_time'
+    : 'independent_segments+delete_segments';
+  // fMP4 needs two things mpegts does not: an init-segment template, and a
+  // .m4s extension on the fragments. Both are muxer-level, so the rest of the
+  // output arguments are shared.
+  const segmentArgs =
+    segmentType === 'fmp4'
+      ? [
+          '-hls_segment_type',
+          'fmp4',
+          '-hls_fmp4_init_filename',
+          fmp4InitFilename(videos.length),
+          '-hls_segment_filename',
+          `${mediaDir}/hls/media_%v_%02d.m4s`
+        ]
+      : [
+          '-hls_segment_type',
+          'mpegts',
+          '-hls_segment_filename',
+          `${mediaDir}/hls/media_%v_%02d.ts`
+        ];
+  return subtitleArgs.concat([
+    '-f',
+    'hls',
+    '-hls_time',
+    `${segmentDuration}`,
+    '-hls_flags',
+    hlsFlags,
+    ...segmentArgs,
+    '-hls_list_size',
+    '6',
+    '-master_pl_name',
+    'index.m3u8',
+    '-var_stream_map',
+    varStreamMap,
+    `${mediaDir}/hls/media_%v.m3u8`
+  ]);
 }
 
 function isSubtitleMediaLine(line: string): boolean {

@@ -13,6 +13,32 @@ export function boolFromEnv(value: string | undefined): boolean {
   return value ? value.toLowerCase() === 'true' || value === '1' : false;
 }
 
+// Parse HLS_ONLY. Unset, or empty-or-whitespace (which container platforms
+// deliver for an unset optional key), returns the default of true. Otherwise
+// the value is trimmed and matched case-insensitively against true/1/yes/on
+// and false/0/no/off. A non-empty unrecognised value FAILS FAST naming the
+// offending value, for the same reason as parseLadder: the previous strict
+// parse silently read anything other than exactly 'true' or '1' (e.g. 'yes',
+// ' true') as false.
+export function parseHlsOnly(
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  const raw = env.HLS_ONLY;
+  if (raw === undefined || raw.trim() === '') {
+    return true;
+  }
+  const value = raw.trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(value)) {
+    return true;
+  }
+  if (['false', '0', 'no', 'off'].includes(value)) {
+    return false;
+  }
+  throw new Error(
+    `Invalid HLS_ONLY '${raw}': must be one of true/1/yes/on or false/0/no/off`
+  );
+}
+
 // Parse the optional ABR ladder from the LADDER env var. The format is a
 // comma-separated list of video rungs, each `<width>x<height>:<bitrate>`, e.g.
 //   LADDER=1920x1080:5000k,1280x720:2800k,640x360:800k
