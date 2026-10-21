@@ -1,5 +1,7 @@
 import {
+  ABR_PRESETS,
   boolFromEnv,
+  parseAbrPreset,
   parseBufsizeFactor,
   parseFramerate,
   parseHlsOnly,
@@ -11,6 +13,7 @@ import {
   parseSegmentType,
   parseSubtitles
 } from './config';
+import { DEFAULT_LADDER } from './encoder';
 
 describe('boolFromEnv', () => {
   test('truthy values', () => {
@@ -375,6 +378,90 @@ describe('parseMaxrateFactor / parseBufsizeFactor', () => {
     expect(() => parseMaxrateFactor({ MAXRATE_FACTOR: 'high' })).toThrow(
       /Invalid MAXRATE_FACTOR 'high'/
     );
+  });
+});
+
+describe('parseAbrPreset', () => {
+  test('returns undefined when ABR_PRESET is unset', () => {
+    expect(parseAbrPreset({})).toBeUndefined();
+  });
+
+  test('treats an empty or whitespace-only value as unset', () => {
+    expect(parseAbrPreset({ ABR_PRESET: '' })).toBeUndefined();
+    expect(parseAbrPreset({ ABR_PRESET: '   ' })).toBeUndefined();
+  });
+
+  test('accepts every known preset, trimmed and case-insensitive', () => {
+    expect(parseAbrPreset({ ABR_PRESET: '720p' })).toBe('720p');
+    expect(parseAbrPreset({ ABR_PRESET: ' 720P_360P ' })).toBe('720p_360p');
+    expect(parseAbrPreset({ ABR_PRESET: '1080p_720p_360p' })).toBe(
+      '1080p_720p_360p'
+    );
+  });
+
+  test('rejects an unknown preset naming the accepted values', () => {
+    expect(() => parseAbrPreset({ ABR_PRESET: '4k' })).toThrow(
+      /Invalid ABR_PRESET '4k': must be one of '720p', '720p_360p', '1080p_720p_360p'/
+    );
+  });
+});
+
+describe('parseLadder with ABR_PRESET', () => {
+  test('720p_360p expands to exactly the built-in default ladder', () => {
+    expect(parseLadder({ ABR_PRESET: '720p_360p' })).toEqual(DEFAULT_LADDER);
+  });
+
+  test('720p expands to a single video rung plus the default audio rung', () => {
+    expect(parseLadder({ ABR_PRESET: '720p' })).toEqual([
+      DEFAULT_LADDER[0],
+      DEFAULT_LADDER[2]
+    ]);
+  });
+
+  test('1080p_720p_360p expands to three video rungs plus audio', () => {
+    const ladder = parseLadder({ ABR_PRESET: '1080p_720p_360p' });
+    expect(ladder?.map((step) => step.video)).toEqual([
+      { width: 1920, height: 1080 },
+      { width: 1280, height: 720 },
+      { width: 640, height: 360 },
+      undefined
+    ]);
+    expect(ladder?.[3]).toEqual(DEFAULT_LADDER[2]);
+  });
+
+  test('every preset is a valid LADDER string', () => {
+    for (const ladder of Object.values(ABR_PRESETS)) {
+      expect(() => parseLadder({ LADDER: ladder })).not.toThrow();
+    }
+  });
+
+  test('fails fast when both LADDER and ABR_PRESET are set', () => {
+    expect(() =>
+      parseLadder({ LADDER: '1280x720:2800k', ABR_PRESET: '720p' })
+    ).toThrow(/Both LADDER and ABR_PRESET are set/);
+  });
+
+  test('an empty LADDER alongside ABR_PRESET is treated as unset', () => {
+    expect(parseLadder({ LADDER: '', ABR_PRESET: '720p_360p' })).toEqual(
+      DEFAULT_LADDER
+    );
+  });
+
+  test('an empty ABR_PRESET alongside LADDER is treated as unset', () => {
+    expect(parseLadder({ LADDER: '640x360:800k', ABR_PRESET: ' ' })).toEqual([
+      {
+        mediaType: 'video',
+        bitrate: '800k',
+        video: { width: 640, height: 360 }
+      },
+      DEFAULT_LADDER[2]
+    ]);
+  });
+
+  test('an unknown ABR_PRESET fails fast even with LADDER set', () => {
+    expect(() =>
+      parseLadder({ LADDER: '640x360:800k', ABR_PRESET: 'bogus' })
+    ).toThrow(/Invalid ABR_PRESET 'bogus'/);
   });
 });
 
