@@ -117,9 +117,15 @@ export const DEFAULT_GOP = 48;
 // previous hardcoded behaviour.
 export const DEFAULT_SEGMENT_DURATION = 10;
 
+// Number of segments ffmpeg keeps in each media playlist (-hls_list_size in
+// generateOutput). Also bounds the /origin segment Cache-Control TTL (see
+// originCacheControl), so the two cannot drift apart.
+export const HLS_LIST_SIZE = 6;
+
 // Upper bound accepted for SEGMENT_DURATION, in seconds. With the fixed
-// -hls_list_size of 6, a 60 s duration already means a 6-minute live window
-// and roughly a segment-length worth of added latency; anything larger is far
+// -hls_list_size of HLS_LIST_SIZE (6), a 60 s duration already means a
+// 6-minute live window and roughly a segment-length worth of added latency;
+// anything larger is far
 // outside sensible HLS practice and almost certainly a unit mistake (e.g. a
 // value in milliseconds), so it fails startup instead of silently producing an
 // unusable stream.
@@ -961,7 +967,7 @@ export function generateOutput(
     hlsFlags,
     ...segmentArgs,
     '-hls_list_size',
-    '6',
+    `${HLS_LIST_SIZE}`,
     '-master_pl_name',
     'index.m3u8',
     '-var_stream_map',

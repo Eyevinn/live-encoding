@@ -189,6 +189,29 @@ Run encoder with media dir at `/data`
 % ORIGIN_DIR=/data npm start
 ```
 
+### Behind a CDN
+
+The service sends a deliberate `Cache-Control` header on every response, so it can be fronted by a CDN (for example the OSC CDN) without the CDN falling back to its own default TTL:
+
+| Path           | Files                                                                                     | `Cache-Control`                                                            |
+| -------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `/origin`      | Playlists (`.m3u8`, master and media)                                                     | `public, max-age=N`, N = `SEGMENT_DURATION / 2` rounded down, at least `1` |
+| `/origin`      | Segments (`.ts`, `.m4s`), fMP4 init segment (`.mp4`), WebVTT segments (`.vtt`)            | `public, max-age=M`, M = `6 x SEGMENT_DURATION` (the playlist window)      |
+| `/origin`      | Any other file                                                                            | `no-cache`                                                                 |
+| `/api`         | Every response, including the Swagger UI and errors                                       | `no-store`                                                                 |
+| `/`            | Control UI and other static files                                                         | `no-cache`                                                                 |
+| `/origin`, `/` | Error responses (status `>= 400`, e.g. a `404` for a playlist or segment not written yet) | `no-store`                                                                 |
+
+Both TTLs follow `SEGMENT_DURATION` (default `10`, so playlists get `max-age=5` and segments `max-age=60`) and apply to `SEGMENT_TYPE=mpegts` and `SEGMENT_TYPE=fmp4` alike. A cached playlist is therefore never more than half a segment behind the live edge.
+
+Segments are not marked `immutable` and their TTL is bounded by the playlist window on purpose: segment and init file names are reused across encoder sessions (the HLS output directory is cleared on every start, numbering restarts at `00` and the init file name is fixed), so a long-lived cache entry would serve the previous session's media after a restart. The bound limits, rather than removes, that risk: right after a restart a CDN can still serve a segment cached under the same name in the previous session for at most one playlist window.
+
+Error responses are never cached, under `/api` or elsewhere: a player that requests `index.m3u8` before the stream has started, or in the moment after a (re)start clears the HLS output directory, gets a `404` with `no-store`, so the CDN does not keep serving that `404` once the stream goes live.
+
+`SEGMENT_DURATION` is passed to ffmpeg as `hls_time`, a target: segments are cut on keyframes, so a real segment can be longer than `SEGMENT_DURATION`. That makes the real playlist window longer than `6 x SEGMENT_DURATION`, so the segment TTL is still within it.
+
+The playlist TTL assumes the CDN honours the origin `Cache-Control` header; a CDN that overrides it with a longer TTL will stall players at the live edge. CORS is unchanged: responses carry `Access-Control-Allow-Origin: *` and `Vary: Origin`, which the CDN should keep in its cache key.
+
 ### SRT input (caller mode)
 
 By default the encoder listens for an incoming RTMP publisher. Set `INPUT_URL` to an `srt://` URL to make the encoder dial a listener-mode SRT source in caller mode and pull the feed instead. This is useful for SRT contribution and for container platforms where no inbound UDP port can be exposed.
