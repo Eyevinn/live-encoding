@@ -1,7 +1,7 @@
 import { FastifyPluginCallback } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import path from 'path';
-import { DEFAULT_SEGMENT_DURATION } from '../encoder';
+import { DEFAULT_SEGMENT_DURATION, HLS_LIST_SIZE } from '../encoder';
 
 export interface RouteOriginOpts {
   mediaPath: string;
@@ -9,10 +9,6 @@ export interface RouteOriginOpts {
   // TTLs below follow it. Falls back to DEFAULT_SEGMENT_DURATION.
   segmentDuration?: number;
 }
-
-// Number of segments ffmpeg keeps in a media playlist (-hls_list_size in
-// generateOutput). Bounds the segment TTL, see originCacheControl.
-export const HLS_LIST_SIZE = 6;
 
 const SEGMENT_EXTENSIONS = ['.ts', '.m4s', '.mp4', '.vtt'];
 
@@ -29,6 +25,8 @@ const SEGMENT_EXTENSIONS = ['.ts', '.m4s', '.mp4', '.vtt'];
 //   after a restart, so the TTL is bounded by the playlist window
 //   (HLS_LIST_SIZE x segment duration), the time a segment is referenced.
 // - Anything else under /origin is revalidated on every request.
+// - Error responses (404 for a playlist or segment not written yet, etc.) never
+//   reach setHeaders; the root onSend hook in api.ts marks them no-store.
 export function originCacheControl(
   filePath: string,
   segmentDuration: number = DEFAULT_SEGMENT_DURATION

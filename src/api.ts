@@ -66,8 +66,15 @@ export default (opts: ApiOptions) => {
   // instance and is scoped to the /api prefix by path. onSend runs after the
   // handlers, so it also overrides the header @fastify/static sets for the
   // Swagger UI assets.
+  //
+  // Error responses (status >= 400) outside /api are marked no-store as well.
+  // @fastify/static only sets the per-type /origin header and the UI header
+  // for files it finds, so a 404 for an index.m3u8 that ffmpeg has not written
+  // yet (before the stream starts, or right after cleanup() on a (re)start)
+  // would otherwise carry no Cache-Control and a CDN would cache it for its
+  // default TTL, keeping the stream unplayable after it goes live.
   api.addHook('onSend', async (request, reply, payload) => {
-    if (isApiPath(request.raw.url ?? request.url)) {
+    if (isApiPath(request.raw.url ?? request.url) || reply.statusCode >= 400) {
       reply.header('Cache-Control', 'no-store');
     }
     return payload;

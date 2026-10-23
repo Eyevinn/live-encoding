@@ -99,6 +99,38 @@ describe('Cache-Control headers', () => {
         });
       }
 
+      it('sends no-store on /origin error responses', async () => {
+        const server = buildServer({
+          title: 'test',
+          encoder: newEncoder(mediaDir, type),
+          mediaDir,
+          uiRoot
+        });
+        const missing = [
+          // A playlist ffmpeg has not written yet (before start, after cleanup).
+          '/origin/hls/missing.m3u8',
+          // A segment that is not (or no longer) on disk.
+          `/origin/hls/media_0_99.${segmentExt}`,
+          '/origin/hls/'
+        ];
+        for (const url of missing) {
+          const res = await server.inject({ method: 'GET', url });
+          expect(res.statusCode).toBe(404);
+          expect(res.headers['cache-control']).toBe('no-store');
+          expect(res.headers['access-control-allow-origin']).toBe('*');
+        }
+        // An unsatisfiable range on an existing segment: the error must not
+        // inherit the segment TTL.
+        const res = await server.inject({
+          method: 'GET',
+          url: `/origin/hls/media_0_00.${segmentExt}`,
+          headers: { range: 'bytes=100000-200000' }
+        });
+        expect(res.statusCode).toBe(416);
+        expect(res.headers['cache-control']).toBe('no-store');
+        await server.close();
+      });
+
       it('keeps the CORS headers on /origin unchanged', async () => {
         const server = buildServer({
           title: 'test',
@@ -194,6 +226,14 @@ describe('Cache-Control headers', () => {
         expect(res.statusCode).toBe(200);
         expect(res.body).toBe(body);
         expect(res.headers['cache-control']).toBe('no-cache');
+      });
+    }
+
+    for (const url of ['/nothing-here', '/missing.js']) {
+      it(`sends no-store on a 404 under / at ${url}`, async () => {
+        const res = await server.inject({ method: 'GET', url });
+        expect(res.statusCode).toBe(404);
+        expect(res.headers['cache-control']).toBe('no-store');
       });
     }
   });
