@@ -1,5 +1,4 @@
-import fastifyStatic from '@fastify/static';
-import api from './api';
+import { buildServer } from './buildServer';
 import { Encoder } from './encoder';
 import {
   boolFromEnv,
@@ -15,12 +14,7 @@ import {
   parseSegmentType,
   parseSubtitles
 } from './config';
-import routeEncoder from './routes/encoder';
-import routeOrigin from './routes/origin';
 import { Log } from './utils/log';
-import path from 'path';
-
-const server = api({ title: 'Eyevinn Live Encoding' });
 
 const mediaDir = process.env.ORIGIN_DIR || '/tmp/media';
 
@@ -111,13 +105,11 @@ const encoder = new Encoder(
   encoderOpts
 );
 
-server.register(routeEncoder, { prefix: '/api', encoder });
-server.register(routeOrigin, {
-  mediaPath: mediaDir
-});
-server.register(fastifyStatic, {
-  root: path.join(__dirname, '../out'),
-  prefix: '/'
+const server = buildServer({
+  title: 'Eyevinn Live Encoding',
+  encoder,
+  mediaDir,
+  segmentDuration
 });
 server.listen({ port: PORT, host: '0.0.0.0' }, (err, address) => {
   if (err) {

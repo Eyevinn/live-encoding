@@ -40,6 +40,17 @@ export interface ApiOptions {
   title: string;
 }
 
+export const API_PREFIX = '/api';
+
+// True for /api, /api/... and /api?..., but not for e.g. /apiary.
+export function isApiPath(url: string): boolean {
+  return (
+    url === API_PREFIX ||
+    url.startsWith(API_PREFIX + '/') ||
+    url.startsWith(API_PREFIX + '?')
+  );
+}
+
 export default (opts: ApiOptions) => {
   const api = fastify({
     ignoreTrailingSlash: true
@@ -47,6 +58,20 @@ export default (opts: ApiOptions) => {
 
   // register the cors plugin, configure it for better security
   api.register(cors);
+
+  // Every response under /api (encoder status/control, healthcheck, Swagger UI)
+  // is dynamic or tied to the running instance, so a CDN or browser must never
+  // store it. The /api routes come from several plugins (healthcheck, swagger-ui,
+  // the encoder routes registered by the server), so the hook sits on the root
+  // instance and is scoped to the /api prefix by path. onSend runs after the
+  // handlers, so it also overrides the header @fastify/static sets for the
+  // Swagger UI assets.
+  api.addHook('onSend', async (request, reply, payload) => {
+    if (isApiPath(request.raw.url ?? request.url)) {
+      reply.header('Cache-Control', 'no-store');
+    }
+    return payload;
+  });
 
   // register the swagger plugins, it will automagically do magic
   api.register(swagger, {
