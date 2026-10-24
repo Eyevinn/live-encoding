@@ -1,6 +1,6 @@
 # typescript-nodejs
 
-Requirements: node.js >= 18.15.0 ( LTS )
+Requirements: node.js ^22.23.4 || >=24.22.1 ( LTS )
 
 Template for TypeScript nodejs projects. It includes:
 
