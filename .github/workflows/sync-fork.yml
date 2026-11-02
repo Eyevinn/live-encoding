@@ -47,4 +47,4 @@ jobs:
           OSC_ACCESS_TOKEN: unused
           OSC_API_KEY: ${{ secrets.OSC_API_KEY }}
           ENV: ${{ inputs.environment || 'prod' }}
-        run: osc --env "$ENV" admin sync-fork --repository-url https://github.com/Eyevinn/live-encoding
+        run: osc --env "$ENV" admin sync-fork --repository-url https://github.com/Eyevinn/live-encoding --wait
